@@ -1,10 +1,9 @@
 """
-Simple in-memory LRU-style cache with TTL for API responses.
+Simple in-memory LRU-style cache with TTL for API responses. (Hana Eun-SEo)
 """
 
 import time
 import threading
-from functools import wraps
 from typing import Optional
 
 
