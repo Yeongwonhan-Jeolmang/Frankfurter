@@ -6,13 +6,21 @@ import customtkinter as ctk
 
 from ui.theme import *
 from ui.widgets import StatusBar
-from ui.tabs import (DashboardTab, HistoricalTab, TimeSeriesTab,
-                      ConverterTab, CompareTab, StatsTab,
-                      HeatmapTab, MatrixTab, WatchlistTab,
-                      CurrencyDetailTab, ProvidersTab)
+from ui.tabs import (
+    DashboardTab,
+    HistoricalTab,
+    TimeSeriesTab,
+    ConverterTab,
+    CompareTab,
+    StatsTab,
+    HeatmapTab,
+    MatrixTab,
+    WatchlistTab,
+    CurrencyDetailTab,
+    ProvidersTab,
+)
 from api.client import FrankfurterClient
 from utils.workers import AsyncWorker
-
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("dark-blue")
@@ -25,17 +33,17 @@ class App(ctk.CTk):
     W, H = 1280, 800
 
     TABS = [
-        ("🏠  Dashboard",   DashboardTab),
-        ("📅  Historical",  HistoricalTab),
+        ("🏠  Dashboard", DashboardTab),
+        ("📅  Historical", HistoricalTab),
         ("📈  Time Series", TimeSeriesTab),
-        ("💱  Converter",   ConverterTab),
-        ("⚖  Compare",     CompareTab),
-        ("📐  Statistics",  StatsTab),
-        ("🔥  Heatmap",     HeatmapTab),
-        ("🔢  Matrix",      MatrixTab),
-        ("👁  Watchlist",   WatchlistTab),
-        ("ℹ  Ccy Detail",  CurrencyDetailTab),
-        ("🏦  Providers",   ProvidersTab),
+        ("💱  Converter", ConverterTab),
+        ("⚖  Compare", CompareTab),
+        ("📐  Statistics", StatsTab),
+        ("🔥  Heatmap", HeatmapTab),
+        ("🔢  Matrix", MatrixTab),
+        ("👁  Watchlist", WatchlistTab),
+        ("ℹ  Ccy Detail", CurrencyDetailTab),
+        ("🏦  Providers", ProvidersTab),
     ]
 
     def __init__(self):
@@ -113,7 +121,8 @@ class App(ctk.CTk):
         self._loading_lbl = ctk.CTkLabel(
             self._tab_frames[self.TABS[0][0]],
             text="⠙  Loading currencies from api.frankfurter.dev…",
-            font=FONT_HEADING, text_color=ACCENT_GOLD,
+            font=FONT_HEADING,
+            text_color=ACCENT_GOLD,
         )
         self._loading_lbl.pack(expand=True)
 
@@ -130,8 +139,12 @@ class App(ctk.CTk):
         def done(data, err):
             if err:
                 self._statusbar.set_status(f"Failed to load currencies: {err}", "error")
-                self._currency_names = {"EUR": "Euro", "USD": "US Dollar",
-                                        "GBP": "British Pound", "JPY": "Japanese Yen"}
+                self._currency_names = {
+                    "EUR": "Euro",
+                    "USD": "US Dollar",
+                    "GBP": "British Pound",
+                    "JPY": "Japanese Yen",
+                }
             else:
                 self._currency_names = data
 

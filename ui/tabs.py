@@ -565,6 +565,7 @@ class ConverterTab(BaseTab):
 
     def _convert(self):
         import math
+
         try:
             amount = float(self._amt.get())
             if not math.isfinite(amount):
