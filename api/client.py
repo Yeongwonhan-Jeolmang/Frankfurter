@@ -1,6 +1,13 @@
 """
 Frankfurter API Client  —  api.frankfurter.dev  v2
 Thread-safe, with integrated TTL caching and full v2 endpoint coverage. (Hana Eun-Seo and Simon Roberge)
+
+v2 API returns flat lists of {date, base, quote, rate} objects.
+All methods that previously returned v1-style dicts now normalise the
+response into the same shape the UI expects:
+  - get_latest_rates / get_rates_on_date  → {"date":..., "base":..., "rates": {quote: rate, ...}}
+  - get_time_series                       → {"rates": {"YYYY-MM-DD": {quote: rate, ...}, ...}}
+  - get_currencies                        → {iso_code: name, ...}
 """
 
 import requests
@@ -45,6 +52,42 @@ class _Cache:
 _cache = _Cache()
 
 
+# ── helpers ───────────────────────────────────────────────────────────────────
+
+
+def _flat_to_rates_dict(flat: list) -> dict:
+    """
+    Convert v2 flat list → {"date":..., "base":..., "rates": {quote: rate}}
+    Works for both single-date and multi-date responses.
+    For multi-date the "date" and "base" fields reflect the first entry.
+    """
+    if not flat:
+        return {"date": "—", "base": "—", "rates": {}}
+    # single-date: all entries share the same date
+    first = flat[0]
+    rates = {entry["quote"]: entry["rate"] for entry in flat}
+    return {
+        "date": first.get("date", "—"),
+        "base": first.get("base", "—"),
+        "rates": rates,
+    }
+
+
+def _flat_to_series_dict(flat: list) -> dict:
+    """
+    Convert v2 flat list → {"rates": {"YYYY-MM-DD": {quote: rate, ...}, ...}}
+    Multiple quotes on the same date are merged into one day-dict.
+    """
+    by_date: dict = {}
+    for entry in flat:
+        d = entry.get("date", "")
+        quote = entry.get("quote", "")
+        rate = entry.get("rate")
+        if d and quote and rate is not None:
+            by_date.setdefault(d, {})[quote] = rate
+    return {"rates": by_date}
+
+
 # ── client ────────────────────────────────────────────────────────────────────
 
 
@@ -60,9 +103,10 @@ class FrankfurterClient:
 
     def get_currencies(self, scope: str = "active") -> dict[str, str]:
         """
-        scope="active"  → 165 current currencies
-        scope="all"     → 201 currencies incl. archived (e.g. DEM, FRF, BEF)
-        Returns {code: name}.
+        scope="active"  → active currencies
+        scope="all"     → all currencies incl. archived (e.g. DEM, FRF, BEF)
+        Returns {iso_code: name}.
+        v2 returns a list of objects: [{iso_code, name, ...}, ...]
         """
         key = f"currencies:{scope}"
         cached = _cache.get(key)
@@ -70,11 +114,19 @@ class FrankfurterClient:
             return cached
         params = {} if scope == "active" else {"scope": "all"}
         data = self._get("/currencies", params)
-        # v2 returns {code: {name:..., ...}} or plain {code: name}
-        if data and isinstance(next(iter(data.values())), dict):
-            result = {k: v.get("name", k) for k, v in data.items()}
+        # v2: list of currency objects
+        if isinstance(data, list):
+            result = {
+                item["iso_code"]: item.get("name", item["iso_code"]) for item in data
+            }
+        elif isinstance(data, dict):
+            # fallback: handle {code: name} or {code: {name: ...}}
+            if data and isinstance(next(iter(data.values())), dict):
+                result = {k: v.get("name", k) for k, v in data.items()}
+            else:
+                result = data
         else:
-            result = data
+            result = {}
         _cache.set(key, result, 86400)
         return result
 
@@ -85,12 +137,23 @@ class FrankfurterClient:
         if cached:
             return cached
         data = self._get(f"/currency/{code.upper()}")
+        # v2 returns a plain object — normalise field names for the UI
+        if isinstance(data, dict):
+            # Ensure "name" key exists
+            if "name" not in data and "iso_code" in data:
+                data["name"] = data.get("iso_code", code)
+            # Ensure "start" key from start_date
+            if "start" not in data and "start_date" in data:
+                data["start"] = data["start_date"]
         _cache.set(key, data, 86400)
         return data
 
     # ── Latest rates ──────────────────────────────────────────────────────────
 
     def get_latest_rates(self, base="EUR", quotes: Optional[list] = None) -> dict:
+        """
+        Returns {"date": ..., "base": ..., "rates": {quote: rate, ...}}
+        """
         params = {"base": base}
         if quotes:
             params["quotes"] = ",".join(quotes)
@@ -98,7 +161,8 @@ class FrankfurterClient:
         cached = _cache.get(key)
         if cached:
             return cached
-        data = self._get("/rates", params)
+        raw = self._get("/rates", params)
+        data = _flat_to_rates_dict(raw) if isinstance(raw, list) else raw
         _cache.set(key, data, 300)
         return data
 
@@ -107,6 +171,9 @@ class FrankfurterClient:
     def get_rates_on_date(
         self, on_date: str, base="EUR", quotes: Optional[list] = None
     ) -> dict:
+        """
+        Returns {"date": ..., "base": ..., "rates": {quote: rate, ...}}
+        """
         params = {"base": base, "date": on_date}
         if quotes:
             params["quotes"] = ",".join(quotes)
@@ -114,7 +181,8 @@ class FrankfurterClient:
         cached = _cache.get(key)
         if cached:
             return cached
-        data = self._get("/rates", params)
+        raw = self._get("/rates", params)
+        data = _flat_to_rates_dict(raw) if isinstance(raw, list) else raw
         _cache.set(key, data, 86400)
         return data
 
@@ -128,6 +196,9 @@ class FrankfurterClient:
         quotes: Optional[list] = None,
         group: Optional[str] = None,
     ) -> dict:
+        """
+        Returns {"rates": {"YYYY-MM-DD": {quote: rate, ...}, ...}}
+        """
         params = {"base": base, "from": start}
         if end:
             params["to"] = end
@@ -139,7 +210,8 @@ class FrankfurterClient:
         cached = _cache.get(key)
         if cached:
             return cached
-        data = self._get("/rates", params)
+        raw = self._get("/rates", params)
+        data = _flat_to_series_dict(raw) if isinstance(raw, list) else raw
         ttl = 86400 if end and end < date.today().isoformat() else 300
         _cache.set(key, data, ttl)
         return data
@@ -149,6 +221,10 @@ class FrankfurterClient:
     def get_single_rate(
         self, base: str, quote: str, on_date: Optional[str] = None
     ) -> dict:
+        """
+        Returns {"date": ..., "base": ..., "quote": ..., "rate": float}
+        v2 /rate/{base}/{quote} already returns this shape — no normalisation needed.
+        """
         params = {}
         if on_date:
             params["date"] = on_date
@@ -175,14 +251,13 @@ class FrankfurterClient:
 
     def get_cross_rate_matrix(self, codes: list[str]) -> dict[str, dict[str, float]]:
         """
-        Return a NxN matrix of rates.  Uses a single call per base by fetching
-        one base at a time with all quotes, minimising round-trips.
+        Return a NxN matrix of rates.  Uses one call per base currency.
         """
         matrix: dict[str, dict[str, float]] = {}
         for base in codes:
             try:
                 data = self.get_latest_rates(base, [q for q in codes if q != base])
-                matrix[base] = data.get("rates", {})
+                matrix[base] = dict(data.get("rates", {}))
                 matrix[base][base] = 1.0
             except FrankfurterAPIError:
                 matrix[base] = {q: None for q in codes}

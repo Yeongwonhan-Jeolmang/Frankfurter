@@ -201,12 +201,12 @@ class DashboardTab(BaseTab):
             self._last = rates_data
             self._names = names
             self._codes = sorted(names.keys())
+            # rates_data is normalised to {"date":..., "base":..., "rates":{quote:rate}}
             rates = rates_data.get("rates", {})
             on_date = rates_data.get("date", "—")
             self._c_rate.set_label(f"{base}/USD")
-            self._c_rate.set_value(
-                f"{rates.get('USD','—'):.4f}" if "USD" in rates else "—"
-            )
+            usd_rate = rates.get("USD")
+            self._c_rate.set_value(f"{usd_rate:.4f}" if usd_rate is not None else "—")
             self._c_count.set_value(str(len(rates)))
             self._c_date.set_value(on_date)
             self._c_scope.set_value(scope.capitalize())
@@ -304,13 +304,17 @@ class HistoricalTab(BaseTab):
                 self._status(f"Error: {err}", "error")
                 return
             self._last = data
+            # data is normalised to {"date":..., "base":..., "rates":{quote:rate}}
             rates = data.get("rates", {})
-            self._c_base.set_value(data.get("base", base))
-            self._c_date2.set_value(data.get("date", on_date))
+            actual_base = data.get("base", base)
+            actual_date = data.get("date", on_date)
+            self._c_base.set_value(actual_base)
+            self._c_date2.set_value(actual_date)
             self._c_cnt.set_value(str(len(rates)))
-            self._table.populate(rates, self._names, data.get("base", base))
+            self._table.populate(rates, self._names, actual_base)
             self._status(
-                f"Historical  •  {base}  •  {on_date}  •  {len(rates)} pairs", "ok"
+                f"Historical  •  {actual_base}  •  {actual_date}  •  {len(rates)} pairs",
+                "ok",
             )
 
         self._run(work, done)

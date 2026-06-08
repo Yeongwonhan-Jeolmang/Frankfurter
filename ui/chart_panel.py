@@ -194,7 +194,7 @@ class ChartPanel(ctk.CTkFrame):
         self._ax = self._fig.add_subplot(111)
         _style(self._ax)
 
-        if "_multi" in self._data:
+        if isinstance(self._data, dict) and "_multi" in self._data:
             self._draw_multi(self._data["_multi"])
         elif ctype == "Line":
             self._draw_line()
