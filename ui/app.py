@@ -56,8 +56,15 @@ class App(ctk.CTk):
         self._client = FrankfurterClient()
         self._currency_names: dict[str, str] = {}
 
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
         self._build_skeleton()
         self._load_currencies()
+
+    def _on_close(self):
+        self.destroy()
+        import sys
+
+        sys.exit(0)
 
     # ------------------------------------------------------------------
     # Layout skeleton (shown immediately, tabs populated after currency load)
@@ -154,16 +161,34 @@ class App(ctk.CTk):
         AsyncWorker(work, done, root=self).start()
 
     def _build_tabs(self):
-        for label, TabClass in self.TABS:
-            parent = self._tab_frames[label]
-            tab_widget = TabClass(
-                parent,
-                client=self._client,
-                currency_names=self._currency_names,
-                status_cb=self._statusbar.set_status,
-            )
-            tab_widget.pack(fill="both", expand=True)
+        # Store tab classes for lazy construction
+        self._tab_classes: dict[str, type] = {label: cls for label, cls in self.TABS}
+        self._built_tabs: set[str] = set()
+
+        # Build only the first tab (Dashboard) immediately so the app feels ready
+        self._build_tab(self.TABS[0][0])
+
+        # All remaining tabs are built lazily on first click
+        self._tabview.configure(command=self._on_tab_change)
 
         self._statusbar.set_status(
             f"Ready  •  {len(self._currency_names)} currencies loaded", "ok"
         )
+
+    def _build_tab(self, label: str):
+        if label in self._built_tabs:
+            return
+        self._built_tabs.add(label)
+        TabClass = self._tab_classes[label]
+        parent = self._tab_frames[label]
+        tab_widget = TabClass(
+            parent,
+            client=self._client,
+            currency_names=self._currency_names,
+            status_cb=self._statusbar.set_status,
+        )
+        tab_widget.pack(fill="both", expand=True)
+
+    def _on_tab_change(self):
+        label = self._tabview.get()
+        self._build_tab(label)

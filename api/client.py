@@ -14,6 +14,7 @@ import requests
 import threading
 import statistics
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date
 from typing import Optional
 
@@ -97,7 +98,10 @@ class FrankfurterClient:
     def __init__(self):
         self._session = requests.Session()
         self._session.headers["Accept"] = "application/json"
-        self._lock = threading.Lock()
+        # NOTE: requests.Session is NOT thread-safe for concurrent use.
+        # We use a per-thread session via threading.local() so parallel
+        # calls (matrix, watchlist) don't block each other.
+        self._local = threading.local()
 
     # ── Currencies ────────────────────────────────────────────────────────────
 
@@ -260,20 +264,29 @@ class FrankfurterClient:
         self, codes: list[str]
     ) -> dict[str, dict[str, float | None]]:
         """
-        Return a NxN matrix of rates.  Uses one call per base currency.
+        Return a NxN matrix of rates.  Fetches all base currencies in parallel.
         Missing rates are represented as None.
         """
         matrix: dict[str, dict[str, float | None]] = {}
-        for base in codes:
+
+        def fetch_row(base):
             try:
                 data = self.get_latest_rates(base, [q for q in codes if q != base])
                 row: dict[str, float | None] = {
                     k: float(v) for k, v in data.get("rates", {}).items()
                 }
                 row[base] = 1.0
-                matrix[base] = row
+                return base, row
             except FrankfurterAPIError:
-                matrix[base] = {q: None for q in codes}
+                fallback: dict[str, float | None] = {q: None for q in codes}
+                return base, fallback
+
+        with ThreadPoolExecutor(max_workers=min(len(codes), 8)) as pool:
+            futures = {pool.submit(fetch_row, base): base for base in codes}
+            for future in as_completed(futures):
+                base, row = future.result()
+                matrix[base] = row
+
         return matrix
 
     # ── Statistics ────────────────────────────────────────────────────────────
@@ -348,41 +361,53 @@ class FrankfurterClient:
 
     def get_watchlist_snapshot(self, pairs: list[tuple[str, str]]) -> list[dict]:
         """
-        Fetch the latest rate for each (base, quote) pair.
+        Fetch the latest rate for each (base, quote) pair in parallel.
         Returns list of {base, quote, rate, date}.
         """
-        results = []
-        for base, quote in pairs:
+
+        def fetch_pair(base, quote):
             try:
                 d = self.get_single_rate(base, quote)
-                results.append(
-                    {
-                        "base": base,
-                        "quote": quote,
-                        "rate": d.get("rate"),
-                        "date": d.get("date"),
-                    }
-                )
+                return {
+                    "base": base,
+                    "quote": quote,
+                    "rate": d.get("rate"),
+                    "date": d.get("date"),
+                }
             except FrankfurterAPIError as e:
-                results.append(
-                    {"base": base, "quote": quote, "rate": None, "error": str(e)}
-                )
+                return {"base": base, "quote": quote, "rate": None, "error": str(e)}
+
+        results: list[dict] = [{}] * len(pairs)
+        with ThreadPoolExecutor(max_workers=min(len(pairs), 8)) as pool:
+            futures = {
+                pool.submit(fetch_pair, b, q): i for i, (b, q) in enumerate(pairs)
+            }
+            for future in as_completed(futures):
+                idx = futures[future]
+                results[idx] = future.result()
+
         return results
 
-    # ── internal ──────────────────────────────────────────────────────────────
+    def _get_session(self) -> requests.Session:
+        """Return a per-thread requests.Session (thread-safe without a lock)."""
+        if not hasattr(self._local, "session"):
+            s = requests.Session()
+            s.headers["Accept"] = "application/json"
+            self._local.session = s
+        return self._local.session
 
     def _get(self, path: str, params: Optional[dict] = None) -> dict:
-        with self._lock:
-            try:
-                r = self._session.get(BASE_URL + path, params=params, timeout=TIMEOUT)
-                if not r.ok:
-                    try:
-                        msg = r.json().get("message", r.text)
-                    except ValueError:
-                        msg = r.text
-                    raise FrankfurterAPIError(f"HTTP {r.status_code}: {msg}")
-                return r.json()
-            except requests.exceptions.ConnectionError as e:
-                raise FrankfurterAPIError(f"Connection error: {e}") from e
-            except requests.exceptions.Timeout:
-                raise FrankfurterAPIError("Request timed out.") from None
+        try:
+            session = self._get_session()
+            r = session.get(BASE_URL + path, params=params, timeout=TIMEOUT)
+            if not r.ok:
+                try:
+                    msg = r.json().get("message", r.text)
+                except ValueError:
+                    msg = r.text
+                raise FrankfurterAPIError(f"HTTP {r.status_code}: {msg}")
+            return r.json()
+        except requests.exceptions.ConnectionError as e:
+            raise FrankfurterAPIError(f"Connection error: {e}") from e
+        except requests.exceptions.Timeout:
+            raise FrankfurterAPIError("Request timed out.") from None
