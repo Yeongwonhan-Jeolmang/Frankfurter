@@ -81,7 +81,7 @@ class BaseTab(ctk.CTkFrame):
 
     def _run(self, fn, cb):
         self._status("Fetching…", "loading")
-        AsyncWorker(fn, cb).start()
+        AsyncWorker(fn, cb, root=self.winfo_toplevel()).start()
 
     def _export_csv_data(self, data):
         p = filedialog.asksaveasfilename(
@@ -564,9 +564,12 @@ class ConverterTab(BaseTab):
         self._hist.configure(state="disabled")
 
     def _convert(self):
+        import math
         try:
             amount = float(self._amt.get())
-        except:
+            if not math.isfinite(amount):
+                raise ValueError("non-finite")
+        except (ValueError, TypeError):
             self._status("Invalid amount", "error")
             return
         base = self._from.get().split(" –")[0].strip()
@@ -581,6 +584,9 @@ class ConverterTab(BaseTab):
                 self._status(f"Error: {err}", "error")
                 return
             rate = data.get("rate", 0)
+            if not rate:
+                self._status("Received zero or missing rate", "error")
+                return
             converted = amount * rate
             self._res.configure(
                 text=f"{amount:,.2f} {base}  =  {converted:,.4f} {quote}"
@@ -1145,7 +1151,7 @@ class WatchlistTab(BaseTab):
             if not err:
                 self._chart.plot_series(data, base, quote)
 
-        AsyncWorker(work, done).start()
+        AsyncWorker(work, done, root=self.winfo_toplevel()).start()
 
 
 # ══════════════════════════════════════════════════════════════════════════════

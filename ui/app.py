@@ -7,7 +7,9 @@ import customtkinter as ctk
 from ui.theme import *
 from ui.widgets import StatusBar
 from ui.tabs import (DashboardTab, HistoricalTab, TimeSeriesTab,
-                      ConverterTab, CompareTab, StatsTab)
+                      ConverterTab, CompareTab, StatsTab,
+                      HeatmapTab, MatrixTab, WatchlistTab,
+                      CurrencyDetailTab, ProvidersTab)
 from api.client import FrankfurterClient
 from utils.workers import AsyncWorker
 
@@ -29,6 +31,11 @@ class App(ctk.CTk):
         ("💱  Converter",   ConverterTab),
         ("⚖  Compare",     CompareTab),
         ("📐  Statistics",  StatsTab),
+        ("🔥  Heatmap",     HeatmapTab),
+        ("🔢  Matrix",      MatrixTab),
+        ("👁  Watchlist",   WatchlistTab),
+        ("ℹ  Ccy Detail",  CurrencyDetailTab),
+        ("🏦  Providers",   ProvidersTab),
     ]
 
     def __init__(self):
@@ -131,7 +138,7 @@ class App(ctk.CTk):
             self._loading_lbl.destroy()
             self._build_tabs()
 
-        AsyncWorker(work, done).start()
+        AsyncWorker(work, done, root=self).start()
 
     def _build_tabs(self):
         for label, TabClass in self.TABS:

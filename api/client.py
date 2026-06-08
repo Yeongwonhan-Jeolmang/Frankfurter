@@ -110,7 +110,7 @@ class FrankfurterClient:
         params = {"base": base, "date": on_date}
         if quotes:
             params["quotes"] = ",".join(quotes)
-        key = f"hist:{on_date}:{base}:{quotes}"
+        key = f"hist:{on_date}:{base}:{','.join(sorted(quotes or []))}"
         cached = _cache.get(key)
         if cached:
             return cached
@@ -135,7 +135,7 @@ class FrankfurterClient:
             params["quotes"] = ",".join(quotes)
         if group:
             params["group"] = group
-        key = f"ts:{start}:{end}:{base}:{quotes}:{group}"
+        key = f"ts:{start}:{end}:{base}:{','.join(sorted(quotes or []))}:{group}"
         cached = _cache.get(key)
         if cached:
             return cached
@@ -200,6 +200,7 @@ class FrankfurterClient:
         pct_changes = [
             (values[i] - values[i - 1]) / values[i - 1] * 100
             for i in range(1, len(values))
+            if values[i - 1] != 0
         ]
         return {
             "min": min(values),
@@ -223,6 +224,8 @@ class FrankfurterClient:
         for v in values:
             if v > peak:
                 peak = v
+            if peak == 0:
+                continue
             dd = (peak - v) / peak * 100
             if dd > max_dd:
                 max_dd = dd
@@ -287,7 +290,7 @@ class FrankfurterClient:
                 if not r.ok:
                     try:
                         msg = r.json().get("message", r.text)
-                    except:
+                    except ValueError:
                         msg = r.text
                     raise FrankfurterAPIError(f"HTTP {r.status_code}: {msg}")
                 return r.json()

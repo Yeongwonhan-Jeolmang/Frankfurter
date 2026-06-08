@@ -224,7 +224,7 @@ class ChartPanel(ctk.CTkFrame):
                 try:
                     dates.append(datetime.strptime(d, "%Y-%m-%d"))
                     vals.append(day[target])
-                except:
+                except ValueError:
                     pass
         return dates, vals
 
@@ -233,6 +233,7 @@ class ChartPanel(ctk.CTkFrame):
         if not rates:
             return
         all_quotes = list(next(iter(rates.values())).keys())
+        dates: list = []  # ensure 'dates' is always defined
         if all_q:
             for i, q in enumerate(all_quotes[: len(PALETTE)]):
                 dates, vals = self._series(q)
@@ -345,7 +346,7 @@ class ChartPanel(ctk.CTkFrame):
                     try:
                         dates.append(datetime.strptime(d, "%Y-%m-%d"))
                         vals.append(day[quote])
-                    except:
+                    except ValueError:
                         pass
             if dates:
                 self._ax.plot(
