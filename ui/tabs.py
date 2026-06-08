@@ -1333,14 +1333,14 @@ class ProvidersTab(BaseTab):
             self._rows.append(hdr)
             for i, prov in enumerate(providers):
                 if isinstance(prov, dict):
-                    key = prov.get("key", prov.get("code", "—"))
-                    name = prov.get("name", "—")
-                    country = prov.get("country", "—")
+                    key = str(prov.get("key", prov.get("code", "—")) or "—")
+                    name = str(prov.get("name", "—") or "—")
+                    country = str(prov.get("country", "—") or "—")
                     n_ccy = len(prov.get("currencies", []))
                 else:
                     key = name = str(prov)
                     country = "—"
-                    n_ccy = "—"
+                    n_ccy: int | str = "—"
                 bg = BG_CARD if i % 2 == 0 else BG_DARK
                 row = ctk.CTkFrame(self._list, fg_color=bg, corner_radius=2)
                 row.pack(fill="x", pady=1)

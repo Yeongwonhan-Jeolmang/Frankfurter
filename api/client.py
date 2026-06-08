@@ -109,22 +109,26 @@ class FrankfurterClient:
         v2 returns a list of objects: [{iso_code, name, ...}, ...]
         """
         key = f"currencies:{scope}"
-        cached = _cache.get(key)
-        if cached:
+        cached: dict[str, str] | None = _cache.get(key)
+        if cached is not None:
             return cached
         params = {} if scope == "active" else {"scope": "all"}
         data = self._get("/currencies", params)
+        result: dict[str, str]
         # v2: list of currency objects
         if isinstance(data, list):
             result = {
-                item["iso_code"]: item.get("name", item["iso_code"]) for item in data
+                str(item["iso_code"]): str(item.get("name", item["iso_code"]))
+                for item in data
+                if "iso_code" in item
             }
         elif isinstance(data, dict):
             # fallback: handle {code: name} or {code: {name: ...}}
-            if data and isinstance(next(iter(data.values())), dict):
-                result = {k: v.get("name", k) for k, v in data.items()}
+            first = next(iter(data.values()), None)
+            if isinstance(first, dict):
+                result = {str(k): str(v.get("name", k)) for k, v in data.items()}
             else:
-                result = data
+                result = {str(k): str(v) for k, v in data.items()}
         else:
             result = {}
         _cache.set(key, result, 86400)
@@ -239,26 +243,35 @@ class FrankfurterClient:
 
     # ── Providers ─────────────────────────────────────────────────────────────
 
-    def get_providers(self) -> list:
-        cached = _cache.get("providers")
-        if cached:
+    def get_providers(self) -> list[dict]:
+        cached: list[dict] | None = _cache.get("providers")
+        if cached is not None:
             return cached
         data = self._get("/providers")
-        _cache.set("providers", data, 86400)
-        return data
+        providers: list[dict] = (
+            data if isinstance(data, list) else data.get("providers", [])
+        )
+        _cache.set("providers", providers, 86400)
+        return providers
 
     # ── Cross-rate matrix ─────────────────────────────────────────────────────
 
-    def get_cross_rate_matrix(self, codes: list[str]) -> dict[str, dict[str, float]]:
+    def get_cross_rate_matrix(
+        self, codes: list[str]
+    ) -> dict[str, dict[str, float | None]]:
         """
         Return a NxN matrix of rates.  Uses one call per base currency.
+        Missing rates are represented as None.
         """
-        matrix: dict[str, dict[str, float]] = {}
+        matrix: dict[str, dict[str, float | None]] = {}
         for base in codes:
             try:
                 data = self.get_latest_rates(base, [q for q in codes if q != base])
-                matrix[base] = dict(data.get("rates", {}))
-                matrix[base][base] = 1.0
+                row: dict[str, float | None] = {
+                    k: float(v) for k, v in data.get("rates", {}).items()
+                }
+                row[base] = 1.0
+                matrix[base] = row
             except FrankfurterAPIError:
                 matrix[base] = {q: None for q in codes}
         return matrix
