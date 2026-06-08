@@ -304,48 +304,63 @@ class SearchEntry(ctk.CTkFrame):
 
 
 class WatchlistPanel(ctk.CTkScrollableFrame):
-    """Compact live watchlist rows."""
+    """Compact live watchlist rows — reuses widgets to avoid destroy/recreate churn."""
+
+    _COLS = 3  # pair label, rate, date
 
     def __init__(self, master, on_select=None, **kw):
         super().__init__(master, fg_color=BG_DARK, **kw)
         self._on_select = on_select
         self._pairs: list[tuple[str, str]] = []
-        self._rows: list[ctk.CTkFrame] = []
+        # Pool of (frame, [label, label, label]) reused in place
+        self._pool: list[tuple[ctk.CTkFrame, list[ctk.CTkLabel]]] = []
 
     def set_pairs(self, pairs: list[tuple[str, str]]) -> None:
         self._pairs = pairs
 
-    def refresh(self, snapshots: list[dict]) -> None:
-        for w in self._rows:
-            w.destroy()
-        self._rows.clear()
-        for i, snap in enumerate(snapshots):
+    def _ensure_pool(self, n: int) -> None:
+        """Grow the pool to at least n rows."""
+        while len(self._pool) < n:
+            i = len(self._pool)
             bg = BG_CARD if i % 2 == 0 else BG_DARK
+            row = ctk.CTkFrame(self, fg_color=bg, corner_radius=4)
+            labels = [
+                ctk.CTkLabel(
+                    row,
+                    text="",
+                    font=FONT_SUBHEAD,
+                    text_color=ACCENT_GOLD,
+                    width=80,
+                    anchor="w",
+                ),
+                ctk.CTkLabel(row, text="", font=FONT_MONO, text_color=TEXT_PRIMARY),
+                ctk.CTkLabel(row, text="", font=FONT_SMALL, text_color=TEXT_DIM),
+            ]
+            labels[0].pack(side="left", padx=PAD_SM, pady=6)
+            labels[1].pack(side="left", padx=PAD_SM)
+            labels[2].pack(side="right", padx=PAD_MD)
+            self._pool.append((row, labels))
+
+    def refresh(self, snapshots: list[dict]) -> None:
+        self._ensure_pool(len(snapshots))
+        for i, snap in enumerate(snapshots):
             base = str(snap.get("base", "?"))
             quote = str(snap.get("quote", "?"))
             rate = snap.get("rate")
-            label = f"{base}/{quote}"
             rate_s = f"{rate:.5f}" if rate else "N/A"
+            date_s = str(snap.get("date", ""))
+            bg = BG_CARD if i % 2 == 0 else BG_DARK
 
-            row = ctk.CTkFrame(self, fg_color=bg, corner_radius=4)
+            row, labels = self._pool[i]
+            row.configure(fg_color=bg)
+            labels[0].configure(text=f"{base}/{quote}")
+            labels[1].configure(text=rate_s)
+            labels[2].configure(text=date_s)
             row.pack(fill="x", pady=1)
 
-            ctk.CTkLabel(
-                row,
-                text=label,
-                font=FONT_SUBHEAD,
-                text_color=ACCENT_GOLD,
-                width=80,
-                anchor="w",
-            ).pack(side="left", padx=PAD_SM, pady=6)
-            ctk.CTkLabel(
-                row, text=rate_s, font=FONT_MONO, text_color=TEXT_PRIMARY
-            ).pack(side="left", padx=PAD_SM)
-            date_s = str(snap.get("date", ""))
-            ctk.CTkLabel(row, text=date_s, font=FONT_SMALL, text_color=TEXT_DIM).pack(
-                side="right", padx=PAD_MD
-            )
-            self._rows.append(row)
+        # Hide unused rows
+        for i in range(len(snapshots), len(self._pool)):
+            self._pool[i][0].pack_forget()
 
 
 class LoadingOverlay(ctk.CTkFrame):

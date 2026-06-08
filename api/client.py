@@ -10,7 +10,7 @@ response into the same shape the UI expects:
   - get_currencies                        → {iso_code: name, ...}
 """
 
-import requests
+import httpx
 import threading
 import statistics
 import time
@@ -96,12 +96,14 @@ class FrankfurterClient:
     """All Frankfurter v2 endpoints in one place."""
 
     def __init__(self):
-        self._session = requests.Session()
-        self._session.headers["Accept"] = "application/json"
-        # NOTE: requests.Session is NOT thread-safe for concurrent use.
-        # We use a per-thread session via threading.local() so parallel
-        # calls (matrix, watchlist) don't block each other.
-        self._local = threading.local()
+        # httpx.Client is thread-safe for concurrent reads; one shared client
+        # with connection pooling is faster than per-thread sessions.
+        self._http = httpx.Client(
+            base_url=BASE_URL,
+            headers={"Accept": "application/json"},
+            timeout=TIMEOUT,
+            http2=False,  # frankfurter.dev doesn't support h2; skip negotiation
+        )
 
     # ── Currencies ────────────────────────────────────────────────────────────
 
@@ -388,26 +390,19 @@ class FrankfurterClient:
 
         return results
 
-    def _get_session(self) -> requests.Session:
-        """Return a per-thread requests.Session (thread-safe without a lock)."""
-        if not hasattr(self._local, "session"):
-            s = requests.Session()
-            s.headers["Accept"] = "application/json"
-            self._local.session = s
-        return self._local.session
+    # ── internal ──────────────────────────────────────────────────────────────
 
     def _get(self, path: str, params: Optional[dict] = None) -> dict:
         try:
-            session = self._get_session()
-            r = session.get(BASE_URL + path, params=params, timeout=TIMEOUT)
-            if not r.ok:
+            r = self._http.get(path, params=params)
+            if not r.is_success:
                 try:
                     msg = r.json().get("message", r.text)
-                except ValueError:
+                except Exception:
                     msg = r.text
                 raise FrankfurterAPIError(f"HTTP {r.status_code}: {msg}")
             return r.json()
-        except requests.exceptions.ConnectionError as e:
+        except httpx.ConnectError as e:
             raise FrankfurterAPIError(f"Connection error: {e}") from e
-        except requests.exceptions.Timeout:
+        except httpx.TimeoutException:
             raise FrankfurterAPIError("Request timed out.") from None

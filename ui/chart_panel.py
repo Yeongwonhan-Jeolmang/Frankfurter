@@ -88,7 +88,7 @@ class ChartPanel(ctk.CTkFrame):
         ).pack(side="right")
 
     def _build_figure(self) -> None:
-        self._fig = Figure(figsize=(8, 4), dpi=96)
+        self._fig = Figure(figsize=(8, 4), dpi=96, constrained_layout=True)
         self._fig.set_facecolor(BG_CARD)
         self._ax = self._fig.add_subplot(111)
         _style(self._ax)
@@ -161,7 +161,6 @@ class ChartPanel(ctk.CTkFrame):
                 fontsize=7,
                 color=TEXT_MUTED,
             )
-        self._fig.tight_layout()
         self._mpl_canvas.draw_idle()
 
     def plot_matrix_heatmap(self, matrix: dict[str, Any], codes: list[str]) -> None:
@@ -200,7 +199,6 @@ class ChartPanel(ctk.CTkFrame):
         )
         cb = self._fig.colorbar(im, ax=ax, fraction=0.03)
         cb.ax.tick_params(colors=TEXT_MUTED, labelsize=7)
-        self._fig.tight_layout()
         self._mpl_canvas.draw_idle()
 
     # ── rendering ─────────────────────────────────────────────────────────────
@@ -232,8 +230,6 @@ class ChartPanel(ctk.CTkFrame):
             self._draw_candle()
         elif ctype == "Scatter":
             self._draw_scatter()
-
-        self._fig.tight_layout()
         # draw_idle() schedules the redraw on the next idle cycle — avoids
         # blocking the GUI thread with an immediate synchronous repaint
         self._mpl_canvas.draw_idle()
@@ -243,15 +239,18 @@ class ChartPanel(ctk.CTkFrame):
         # Return from cache if available
         if target in self._series_cache:
             return self._series_cache[target]
-        dates: list[datetime] = []
-        vals: list[float] = []
-        for d, day in sorted(self._data.get("rates", {}).items()):
-            if target in day:
-                try:
-                    dates.append(datetime.strptime(d, "%Y-%m-%d"))
-                    vals.append(float(day[target]))
-                except (ValueError, TypeError):
-                    pass
+        rates = self._data.get("rates", {})
+        if not rates:
+            return [], []
+        # Use pandas for vectorised date parsing — much faster than strptime in a loop
+        items = sorted(
+            ((d, day[target]) for d, day in rates.items() if target in day),
+        )
+        if not items:
+            return [], []
+        date_strs, vals_raw = zip(*items)
+        dates: list[datetime] = [pd.Timestamp(d).to_pydatetime() for d in date_strs]
+        vals = [float(v) for v in vals_raw]
         self._series_cache[target] = (dates, vals)
         return dates, vals
 
