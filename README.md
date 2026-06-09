@@ -48,7 +48,6 @@ pip install -r requirements.txt
 ## Project Structure
 
 ```
-frankfurter_app/
 ├── main.py                   ← Entry point
 ├── requirements.txt
 │

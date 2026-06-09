@@ -399,15 +399,12 @@ class ChartPanel(ctk.CTkFrame):
 
     def _draw_multi(self, datasets: dict[str, dict[str, Any]]) -> None:
         for i, (quote, data) in enumerate(datasets.items()):
-            dates: list[datetime] = []
-            vals: list[float] = []
-            for d, day in sorted(data.get("rates", {}).items()):
-                if quote in day:
-                    try:
-                        dates.append(datetime.strptime(d, "%Y-%m-%d"))
-                        vals.append(float(day[quote]))
-                    except (ValueError, TypeError):
-                        pass
+            # Temporarily swap in the dataset so _series() can parse it
+            prev_data, prev_quote = self._data, self._quote
+            self._data = data
+            self._quote = quote
+            dates, vals = self._series(quote)
+            self._data, self._quote = prev_data, prev_quote
             if dates:
                 self._ax.plot(
                     np.array(dates),

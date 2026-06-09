@@ -37,8 +37,12 @@ class _Cache:
     def get(self, key):
         with self._lock:
             e = self._store.get(key)
-            if e and time.monotonic() < e[1]:
+            if e is None:
+                return None
+            if time.monotonic() < e[1]:
                 return e[0]
+            # Evict expired entry immediately rather than letting it accumulate
+            del self._store[key]
             return None
 
     def set(self, key, value, ttl: int):
@@ -379,7 +383,9 @@ class FrankfurterClient:
             except FrankfurterAPIError as e:
                 return {"base": base, "quote": quote, "rate": None, "error": str(e)}
 
-        results: list[dict] = [{}] * len(pairs)
+        if not pairs:
+            return []
+        results: list[dict] = [{} for _ in pairs]
         with ThreadPoolExecutor(max_workers=min(len(pairs), 8)) as pool:
             futures = {
                 pool.submit(fetch_pair, b, q): i for i, (b, q) in enumerate(pairs)

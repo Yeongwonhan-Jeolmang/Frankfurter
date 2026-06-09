@@ -61,6 +61,10 @@ class App(ctk.CTk):
         self._load_currencies()
 
     def _on_close(self):
+        try:
+            self._client._http.close()
+        except Exception:
+            pass
         self.destroy()
         import sys
 

@@ -767,6 +767,9 @@ class StatsTab(BaseTab):
         end = self._end_e.get().strip()
 
         def work():
+            # get_time_series is called inside get_volatility_stats; the result
+            # is cached so the second call here is a cheap cache hit, avoiding a
+            # redundant network round-trip.
             stats = self._client.get_volatility_stats(base, quote, start, end)
             series = self._client.get_time_series(start, end, base, [quote])
             return stats, series

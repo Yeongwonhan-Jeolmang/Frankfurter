@@ -10,21 +10,40 @@ from typing import Any
 
 def export_to_csv(data: dict, filepath: str) -> str:
     """
-    Flatten a Frankfurter rates-series dict and write to CSV.
+    Flatten a Frankfurter rates dict and write to CSV.
+    Handles both time-series ({date: {currency: rate}}) and
+    single-date ({currency: rate}) formats.
     Returns the final filepath.
     """
     rates = data.get("rates", {})
     base = data.get("base", "BASE")
 
     rows = []
-    for date_str, pairs in sorted(rates.items()):
-        for currency, rate in pairs.items():
-            rows.append(
-                {"date": date_str, "base": base, "currency": currency, "rate": rate}
-            )
+    if rates:
+        # Peek at the first value to detect format
+        first_val = next(iter(rates.values()))
+        if isinstance(first_val, dict):
+            # Time-series: {"YYYY-MM-DD": {"USD": 1.08, ...}, ...}
+            for date_str, pairs in sorted(rates.items()):
+                for currency, rate in pairs.items():
+                    rows.append(
+                        {
+                            "date": date_str,
+                            "base": base,
+                            "currency": currency,
+                            "rate": rate,
+                        }
+                    )
+        else:
+            # Single-date: {"USD": 1.08, "GBP": 0.85, ...}
+            date_str = data.get("date", "")
+            for currency, rate in rates.items():
+                rows.append(
+                    {"date": date_str, "base": base, "currency": currency, "rate": rate}
+                )
 
     if not rows and "rate" in data:
-        # Single-pair response
+        # Single-pair response from get_single_rate
         rows.append(
             {
                 "date": data.get("date", ""),
