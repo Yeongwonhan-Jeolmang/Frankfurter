@@ -16,6 +16,7 @@ from ui.widgets import (
     RateTable,
     SearchEntry,
     WatchlistPanel,
+    SkeletonFrame,
 )
 from ui.chart_panel import ChartPanel
 from utils.workers import AsyncWorker
@@ -68,20 +69,74 @@ def _sidebar(parent, title):
     return sb
 
 
+def _quick_range_row(parent, start_entry, end_entry, fetch_fn):
+    """Add quick-range buttons (1M 3M 6M YTD 1Y) to *parent*, wiring them to
+    start_entry / end_entry and calling fetch_fn after each click."""
+    ctk.CTkLabel(
+        parent, text="Quick Ranges", font=FONT_LABEL, text_color=TEXT_MUTED
+    ).pack(padx=PAD_MD, anchor="w")
+    qf = ctk.CTkFrame(parent, fg_color="transparent")
+    qf.pack(fill="x", padx=PAD_MD)
+
+    def _apply(days, ytd=False):
+        end = date.today()
+        start = date(end.year, 1, 1) if ytd else (end - timedelta(days=days))
+        start_entry.delete(0, "end")
+        start_entry.insert(0, start.isoformat())
+        end_entry.delete(0, "end")
+        end_entry.insert(0, end.isoformat())
+        fetch_fn()
+
+    presets = [
+        ("1M", 30, False),
+        ("3M", 90, False),
+        ("6M", 180, False),
+        ("YTD", 0, True),
+        ("1Y", 365, False),
+    ]
+    for lbl, days, ytd in presets:
+        ctk.CTkButton(
+            qf,
+            text=lbl,
+            height=26,
+            width=40,
+            fg_color=BG_INPUT,
+            hover_color=BG_HOVER,
+            text_color=TEXT_PRIMARY,
+            font=FONT_SMALL,
+            command=lambda d=days, y=ytd: _apply(d, y),
+        ).pack(side="left", padx=1, pady=2)
+
+
 # ── base ───────────────────────────────────────────────────────────────────────
 
 
 class BaseTab(ctk.CTkFrame):
-    def __init__(self, master, client, currency_names, status_cb, **kw):
+    def __init__(self, master, client, currency_names, status_cb, settings=None, **kw):
         super().__init__(master, fg_color=BG_DARK, **kw)
         self._client = client
         self._names = currency_names
         self._status = status_cb
         self._codes = sorted(currency_names.keys())
+        self._settings = settings
 
-    def _run(self, fn, cb):
+    def _run(self, fn, cb, skeleton=None):
         self._status("Fetching…", "loading")
-        AsyncWorker(fn, cb, root=self.winfo_toplevel()).start()
+        if skeleton:
+            try:
+                skeleton.show()
+            except Exception:
+                pass
+
+        def wrapped(result, err):
+            if skeleton:
+                try:
+                    skeleton.hide()
+                except Exception:
+                    pass
+            cb(result, err)
+
+        AsyncWorker(fn, wrapped, root=self.winfo_toplevel()).start()
 
     def _export_csv_data(self, data):
         p = filedialog.asksaveasfilename(
@@ -110,8 +165,8 @@ class BaseTab(ctk.CTkFrame):
 
 
 class DashboardTab(BaseTab):
-    def __init__(self, master, client, currency_names, status_cb, **kw):
-        super().__init__(master, client, currency_names, status_cb, **kw)
+    def __init__(self, master, client, currency_names, status_cb, settings=None, **kw):
+        super().__init__(master, client, currency_names, status_cb, settings, **kw)
         self._last: dict = {}
         self._build()
 
@@ -126,7 +181,10 @@ class DashboardTab(BaseTab):
             padx=PAD_MD, pady=(0, PAD_SM), anchor="w"
         )
         self._base = LabelledCombo(sb, "", self._codes, width=210)
-        self._base.set("EUR")
+        saved_base = (
+            self._settings.get("dashboard_base", "EUR") if self._settings else "EUR"
+        )
+        self._base.set(saved_base)
         self._base.pack(padx=PAD_MD, pady=(0, PAD_MD), fill="x")
 
         SectionHeader(sb, "Filter").pack(padx=PAD_MD, pady=(0, PAD_SM), anchor="w")
@@ -143,7 +201,6 @@ class DashboardTab(BaseTab):
             padx=PAD_MD, pady=2, fill="x"
         )
 
-        # scope toggle for all/active currencies
         HSeparator(sb).pack(fill="x", padx=PAD_MD, pady=PAD_MD)
         ctk.CTkLabel(
             sb, text="Currency Scope", font=FONT_LABEL, text_color=TEXT_MUTED
@@ -163,6 +220,21 @@ class DashboardTab(BaseTab):
                 fg_color=ACCENT_GOLD,
             ).pack(anchor="w", padx=PAD_MD, pady=1)
 
+        # Pinned pairs panel in sidebar
+        HSeparator(sb).pack(fill="x", padx=PAD_MD, pady=PAD_MD)
+        ctk.CTkLabel(
+            sb, text="★  Pinned Pairs", font=FONT_LABEL, text_color=ACCENT_GOLD
+        ).pack(padx=PAD_MD, anchor="w")
+        self._pinned_lbl = ctk.CTkLabel(
+            sb,
+            text="Click ★ in the table to pin a pair",
+            font=FONT_SMALL,
+            text_color=TEXT_DIM,
+            wraplength=200,
+            justify="left",
+        )
+        self._pinned_lbl.pack(padx=PAD_MD, anchor="w", pady=(2, 0))
+
         # main
         main = ctk.CTkFrame(self, fg_color="transparent")
         main.pack(side="left", fill="both", expand=True, padx=PAD_LG, pady=PAD_LG)
@@ -176,10 +248,31 @@ class DashboardTab(BaseTab):
         for c in [self._c_rate, self._c_count, self._c_date, self._c_scope]:
             c.pack(side="left", expand=True, fill="both", padx=PAD_SM)
 
-        SectionHeader(main, "Exchange Rates").pack(anchor="w", pady=(0, PAD_SM))
-        self._table = RateTable(main)
+        SectionHeader(main, "Exchange Rates  (click ★ to pin)").pack(
+            anchor="w", pady=(0, PAD_SM)
+        )
+
+        # Wrap table in a relative-positioned container so SkeletonFrame can place() over it
+        table_wrap = ctk.CTkFrame(main, fg_color="transparent")
+        table_wrap.pack(fill="both", expand=True)
+        self._table = RateTable(table_wrap, settings=self._settings)
         self._table.pack(fill="both", expand=True)
+        self._skeleton = SkeletonFrame(table_wrap)
+
         self._fetch()
+
+    def _update_pinned_label(self):
+        if not self._settings:
+            return
+        favs = self._settings.get_favourites()
+        base = self._base.get().split(" –")[0].strip()
+        pairs = [f"{b}/{q}" for b, q in favs if b == base]
+        if pairs:
+            self._pinned_lbl.configure(text="\n".join(pairs), text_color=ACCENT_GOLD)
+        else:
+            self._pinned_lbl.configure(
+                text="Click ★ in the table to pin a pair", text_color=TEXT_DIM
+            )
 
     def _on_filter(self, text):
         self._table.set_filter(text)
@@ -187,6 +280,8 @@ class DashboardTab(BaseTab):
     def _fetch(self):
         base = self._base.get().split(" –")[0].strip()
         scope = self._scope.get()
+        if self._settings:
+            self._settings.set("dashboard_base", base)
 
         def work():
             rates = self._client.get_latest_rates(base)
@@ -201,7 +296,6 @@ class DashboardTab(BaseTab):
             self._last = rates_data
             self._names = names
             self._codes = sorted(names.keys())
-            # rates_data is normalised to {"date":..., "base":..., "rates":{quote:rate}}
             rates = rates_data.get("rates", {})
             on_date = rates_data.get("date", "—")
             self._c_rate.set_label(f"{base}/USD")
@@ -211,9 +305,10 @@ class DashboardTab(BaseTab):
             self._c_date.set_value(on_date)
             self._c_scope.set_value(scope.capitalize())
             self._table.populate(rates, names, base)
+            self._update_pinned_label()
             self._status(f"Rates for {base}  •  {on_date}  •  {len(rates)} pairs", "ok")
 
-        self._run(work, done)
+        self._run(work, done, skeleton=self._skeleton)
 
     def _do_csv(self):
         if self._last:
@@ -230,8 +325,8 @@ class DashboardTab(BaseTab):
 
 
 class HistoricalTab(BaseTab):
-    def __init__(self, master, client, currency_names, status_cb, **kw):
-        super().__init__(master, client, currency_names, status_cb, **kw)
+    def __init__(self, master, client, currency_names, status_cb, settings=None, **kw):
+        super().__init__(master, client, currency_names, status_cb, settings, **kw)
         self._last: dict = {}
         self._build()
 
@@ -244,7 +339,6 @@ class HistoricalTab(BaseTab):
         _btn(inner, "🔍  Fetch", self._fetch).pack(fill="x", pady=PAD_SM)
         HSeparator(sb).pack(fill="x", padx=PAD_MD, pady=PAD_MD)
 
-        # quick year shortcuts
         ctk.CTkLabel(
             sb, text="Quick Jump", font=FONT_LABEL, text_color=TEXT_MUTED
         ).pack(padx=PAD_MD, anchor="w")
@@ -284,8 +378,12 @@ class HistoricalTab(BaseTab):
             c.pack(side="left", expand=True, fill="both", padx=PAD_SM)
 
         SectionHeader(main, "Rates on Selected Date").pack(anchor="w", pady=(0, PAD_SM))
-        self._table = RateTable(main)
+
+        table_wrap = ctk.CTkFrame(main, fg_color="transparent")
+        table_wrap.pack(fill="both", expand=True)
+        self._table = RateTable(table_wrap, settings=self._settings)
         self._table.pack(fill="both", expand=True)
+        self._skeleton = SkeletonFrame(table_wrap)
 
     def _jump_year(self, yr):
         self._date_e.delete(0, "end")
@@ -304,7 +402,6 @@ class HistoricalTab(BaseTab):
                 self._status(f"Error: {err}", "error")
                 return
             self._last = data
-            # data is normalised to {"date":..., "base":..., "rates":{quote:rate}}
             rates = data.get("rates", {})
             actual_base = data.get("base", base)
             actual_date = data.get("date", on_date)
@@ -317,7 +414,7 @@ class HistoricalTab(BaseTab):
                 "ok",
             )
 
-        self._run(work, done)
+        self._run(work, done, skeleton=self._skeleton)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -326,8 +423,8 @@ class HistoricalTab(BaseTab):
 
 
 class TimeSeriesTab(BaseTab):
-    def __init__(self, master, client, currency_names, status_cb, **kw):
-        super().__init__(master, client, currency_names, status_cb, **kw)
+    def __init__(self, master, client, currency_names, status_cb, settings=None, **kw):
+        super().__init__(master, client, currency_names, status_cb, settings, **kw)
         self._last: dict = {}
         self._build()
 
@@ -335,12 +432,24 @@ class TimeSeriesTab(BaseTab):
         sb = _sidebar(self, "Time Series Chart")
         inner = ctk.CTkFrame(sb, fg_color="transparent")
         inner.pack(fill="x", padx=PAD_MD)
-        self._base_e = _date_entry(inner, "Base", "EUR")
-        self._quote_e = _date_entry(inner, "Quote", "USD")
-        self._start_e = _date_entry(
-            inner, "Start", (date.today() - timedelta(days=365)).isoformat()
+
+        # Restore persisted values
+        s = self._settings
+        saved_base = s.get("ts_base", "EUR") if s else "EUR"
+        saved_quote = s.get("ts_quote", "USD") if s else "USD"
+        saved_start = (
+            s.get("ts_start", (date.today() - timedelta(days=365)).isoformat())
+            if s
+            else (date.today() - timedelta(days=365)).isoformat()
         )
-        self._end_e = _date_entry(inner, "End", date.today().isoformat())
+        saved_end = (
+            s.get("ts_end", date.today().isoformat()) if s else date.today().isoformat()
+        )
+
+        self._base_e = _date_entry(inner, "Base", saved_base)
+        self._quote_e = _date_entry(inner, "Quote", saved_quote)
+        self._start_e = _date_entry(inner, "Start", saved_start)
+        self._end_e = _date_entry(inner, "End", saved_end)
 
         ctk.CTkLabel(
             inner, text="Group By", font=FONT_LABEL, text_color=TEXT_MUTED
@@ -356,6 +465,21 @@ class TimeSeriesTab(BaseTab):
                 text_color=TEXT_PRIMARY,
                 fg_color=ACCENT_GOLD,
             ).pack(anchor="w", pady=1)
+
+        # % change toggle
+        HSeparator(inner).pack(fill="x", pady=PAD_SM)
+        self._pct_var = ctk.BooleanVar(value=False)
+        ctk.CTkCheckBox(
+            inner,
+            text="% Change from Start",
+            variable=self._pct_var,
+            font=FONT_SMALL,
+            text_color=TEXT_PRIMARY,
+            fg_color=ACCENT_GOLD,
+            hover_color=ACCENT_GOLD,
+            checkmark_color=BG_DARK,
+            command=self._on_pct_toggle,
+        ).pack(anchor="w", pady=(0, PAD_SM))
 
         _btn(inner, "📈  Fetch & Plot", self._fetch).pack(fill="x", pady=PAD_MD)
 
@@ -400,6 +524,10 @@ class TimeSeriesTab(BaseTab):
 
         self._chart = ChartPanel(main)
         self._chart.pack(fill="both", expand=True, padx=PAD_MD, pady=PAD_MD)
+        self._skeleton = SkeletonFrame(main)
+
+    def _on_pct_toggle(self):
+        self._chart.set_pct_mode(self._pct_var.get())
 
     def _quick(self, days):
         end = date.today()
@@ -418,6 +546,12 @@ class TimeSeriesTab(BaseTab):
         group = self._group.get()
         group = None if group == "none" else group
 
+        if self._settings:
+            self._settings.set("ts_base", base)
+            self._settings.set("ts_quote", quote)
+            self._settings.set("ts_start", start)
+            self._settings.set("ts_end", end)
+
         def work():
             return self._client.get_time_series(start, end, base, [quote], group)
 
@@ -426,13 +560,14 @@ class TimeSeriesTab(BaseTab):
                 self._status(f"Error: {err}", "error")
                 return
             self._last = data
+            self._chart.set_pct_mode(self._pct_var.get())
             self._chart.plot_series(data, base, quote)
             n = len(data.get("rates", {}))
             self._status(
                 f"{base}/{quote}  •  {n} data points  •  {start} → {end}", "ok"
             )
 
-        self._run(work, done)
+        self._run(work, done, skeleton=self._skeleton)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -441,8 +576,9 @@ class TimeSeriesTab(BaseTab):
 
 
 class ConverterTab(BaseTab):
-    def __init__(self, master, client, currency_names, status_cb, **kw):
-        super().__init__(master, client, currency_names, status_cb, **kw)
+    def __init__(self, master, client, currency_names, status_cb, settings=None, **kw):
+        super().__init__(master, client, currency_names, status_cb, settings, **kw)
+        self._last_result_text: str = "—"
         self._build()
 
     def _build(self):
@@ -486,8 +622,13 @@ class ConverterTab(BaseTab):
         self._amt.insert(0, "1000")
         self._amt.pack(side="left", padx=PAD_MD)
 
+        # Restore saved currencies
+        s = self._settings
+        saved_from = s.get("conv_from", "EUR") if s else "EUR"
+        saved_to = s.get("conv_to", "USD") if s else "USD"
+
         self._from = LabelledCombo(row1, "From", self._codes, width=200)
-        self._from.set("EUR")
+        self._from.set(saved_from)
         self._from.pack(side="left", padx=PAD_MD)
         ctk.CTkButton(
             row1,
@@ -501,9 +642,35 @@ class ConverterTab(BaseTab):
             command=self._swap,
         ).pack(side="left", padx=PAD_SM)
         self._to = LabelledCombo(row1, "To", self._codes, width=200)
-        self._to.set("USD")
+        self._to.set(saved_to)
         self._to.pack(side="left", padx=PAD_MD)
         _btn(row1, "Convert", self._convert).pack(side="left", padx=PAD_MD)
+
+        # Direction toggle (reverse mode)
+        row_dir = ctk.CTkFrame(card, fg_color="transparent")
+        row_dir.pack(fill="x", padx=PAD_LG, pady=(0, PAD_SM))
+        ctk.CTkLabel(
+            row_dir, text="Direction:", font=FONT_SMALL, text_color=TEXT_MUTED
+        ).pack(side="left")
+        self._dir_var = ctk.StringVar(value="fwd")
+        ctk.CTkRadioButton(
+            row_dir,
+            text="Base → Quote",
+            variable=self._dir_var,
+            value="fwd",
+            font=FONT_SMALL,
+            text_color=TEXT_PRIMARY,
+            fg_color=ACCENT_GOLD,
+        ).pack(side="left", padx=(PAD_MD, PAD_SM))
+        ctk.CTkRadioButton(
+            row_dir,
+            text="Quote → Base  (reverse)",
+            variable=self._dir_var,
+            value="rev",
+            font=FONT_SMALL,
+            text_color=TEXT_PRIMARY,
+            fg_color=ACCENT_GOLD,
+        ).pack(side="left", padx=PAD_SM)
 
         # optional historical date
         row2 = ctk.CTkFrame(card, fg_color="transparent")
@@ -539,6 +706,24 @@ class ConverterTab(BaseTab):
         )
         self._detail.pack(pady=(4, 0))
 
+        # Copy to clipboard button
+        copy_row = ctk.CTkFrame(res_f, fg_color="transparent")
+        copy_row.pack(pady=(PAD_SM, 0))
+        self._copy_btn = ctk.CTkButton(
+            copy_row,
+            text="📋  Copy Result",
+            width=140,
+            height=28,
+            fg_color=BG_INPUT,
+            hover_color=BG_HOVER,
+            border_color=BORDER_COLOR,
+            border_width=1,
+            text_color=TEXT_PRIMARY,
+            font=FONT_SMALL,
+            command=self._copy_to_clipboard,
+        )
+        self._copy_btn.pack()
+
         HSeparator(outer).pack(fill="x", pady=PAD_MD)
         SectionHeader(outer, "Conversion History").pack(anchor="w", pady=(0, PAD_SM))
         self._hist = ctk.CTkTextbox(
@@ -567,6 +752,21 @@ class ConverterTab(BaseTab):
         self._hist.delete("1.0", "end")
         self._hist.configure(state="disabled")
 
+    def _copy_to_clipboard(self):
+        text = self._last_result_text
+        if text and text != "—":
+            try:
+                root = self.winfo_toplevel()
+                root.clipboard_clear()
+                root.clipboard_append(text)
+                self._copy_btn.configure(text="✓  Copied!")
+                self.after(
+                    1500, lambda: self._copy_btn.configure(text="📋  Copy Result")
+                )
+                self._status("Result copied to clipboard", "ok")
+            except Exception as e:
+                self._status(f"Copy failed: {e}", "error")
+
     def _convert(self):
         import math
 
@@ -577,11 +777,19 @@ class ConverterTab(BaseTab):
         except (ValueError, TypeError):
             self._status("Invalid amount", "error")
             return
+
         base = self._from.get().split(" –")[0].strip()
         quote = self._to.get().split(" –")[0].strip()
         on_date = self._date_e.get().strip() or None
+        reverse = self._dir_var.get() == "rev"
+
+        # Persist selections
+        if self._settings:
+            self._settings.set("conv_from", base)
+            self._settings.set("conv_to", quote)
 
         def work():
+            # Always fetch the base→quote rate; reverse logic is applied client-side
             return self._client.get_single_rate(base, quote, on_date)
 
         def done(data, err):
@@ -592,20 +800,30 @@ class ConverterTab(BaseTab):
             if not rate:
                 self._status("Received zero or missing rate", "error")
                 return
-            converted = amount * rate
-            self._res.configure(
-                text=f"{amount:,.2f} {base}  =  {converted:,.4f} {quote}"
-            )
+
+            if reverse:
+                # amount is in *quote* currency; convert back to base
+                effective_rate = 1.0 / rate
+                converted = amount * effective_rate
+                result_text = f"{amount:,.2f} {quote}  =  {converted:,.4f} {base}"
+                log_from, log_to = quote, base
+            else:
+                converted = amount * rate
+                result_text = f"{amount:,.2f} {base}  =  {converted:,.4f} {quote}"
+                log_from, log_to = base, quote
+
+            self._last_result_text = result_text
+            self._res.configure(text=result_text)
             self._detail.configure(
                 text=f"Rate: {rate:.6f}  •  Inverse: {1/rate:.6f}  •  Date: {data.get('date','—')}"
             )
             ts = datetime.now().strftime("%H:%M:%S")
-            log = f"[{ts}]  {amount:,.2f} {base} → {converted:,.4f} {quote}  @ {rate:.6f}  ({data.get('date','latest')})\n"
+            log = f"[{ts}]  {amount:,.2f} {log_from} → {converted:,.4f} {log_to}  @ {rate:.6f}  ({data.get('date','latest')})\n"
             self._hist.configure(state="normal")
             self._hist.insert("end", log)
             self._hist.see("end")
             self._hist.configure(state="disabled")
-            self._status(f"Converted  {amount} {base} → {quote}", "ok")
+            self._status(f"Converted  {amount} {log_from} → {log_to}", "ok")
 
         self._run(work, done)
 
@@ -616,19 +834,31 @@ class ConverterTab(BaseTab):
 
 
 class CompareTab(BaseTab):
-    def __init__(self, master, client, currency_names, status_cb, **kw):
-        super().__init__(master, client, currency_names, status_cb, **kw)
+    def __init__(self, master, client, currency_names, status_cb, settings=None, **kw):
+        super().__init__(master, client, currency_names, status_cb, settings, **kw)
         self._build()
 
     def _build(self):
         sb = _sidebar(self, "Multi-Currency Compare")
         inner = ctk.CTkFrame(sb, fg_color="transparent")
         inner.pack(fill="x", padx=PAD_MD)
-        self._base_e = _date_entry(inner, "Base", "EUR")
-        self._start_e = _date_entry(
-            inner, "Start", (date.today() - timedelta(days=365)).isoformat()
+
+        s = self._settings
+        saved_base = s.get("cmp_base", "EUR") if s else "EUR"
+        saved_start = (
+            s.get("cmp_start", (date.today() - timedelta(days=365)).isoformat())
+            if s
+            else (date.today() - timedelta(days=365)).isoformat()
         )
-        self._end_e = _date_entry(inner, "End", date.today().isoformat())
+        saved_end = (
+            s.get("cmp_end", date.today().isoformat())
+            if s
+            else date.today().isoformat()
+        )
+
+        self._base_e = _date_entry(inner, "Base", saved_base)
+        self._start_e = _date_entry(inner, "Start", saved_start)
+        self._end_e = _date_entry(inner, "End", saved_end)
 
         ctk.CTkLabel(
             inner,
@@ -643,7 +873,7 @@ class CompareTab(BaseTab):
         self._search_c.pack(fill="x", pady=(0, PAD_SM))
 
         self._scroll = ctk.CTkScrollableFrame(
-            inner, height=220, fg_color=BG_INPUT, corner_radius=CORNER_RADIUS
+            inner, height=200, fg_color=BG_INPUT, corner_radius=CORNER_RADIUS
         )
         self._scroll.pack(fill="x")
         self._check_vars: dict[str, ctk.BooleanVar] = {}
@@ -667,10 +897,14 @@ class CompareTab(BaseTab):
 
         _btn(inner, "📊  Compare", self._fetch).pack(fill="x", pady=PAD_MD)
 
+        HSeparator(sb).pack(fill="x", padx=PAD_MD, pady=PAD_MD)
+        _quick_range_row(sb, self._start_e, self._end_e, self._fetch)
+
         main = ctk.CTkFrame(self, fg_color="transparent")
         main.pack(side="left", fill="both", expand=True)
         self._chart = ChartPanel(main)
         self._chart.pack(fill="both", expand=True, padx=PAD_MD, pady=PAD_MD)
+        self._skeleton = SkeletonFrame(main)
 
     def _filter_checks(self, text):
         text = text.upper()
@@ -692,6 +926,11 @@ class CompareTab(BaseTab):
             self._status("Select at least one currency", "error")
             return
 
+        if self._settings:
+            self._settings.set("cmp_base", base)
+            self._settings.set("cmp_start", start)
+            self._settings.set("cmp_end", end)
+
         def work():
             return {
                 q: self._client.get_time_series(start, end, base, [q]) for q in quotes
@@ -704,7 +943,7 @@ class CompareTab(BaseTab):
             self._chart.plot_multi(data, base)
             self._status(f"Comparing {len(quotes)} currencies vs {base}", "ok")
 
-        self._run(work, done)
+        self._run(work, done, skeleton=self._skeleton)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -713,21 +952,37 @@ class CompareTab(BaseTab):
 
 
 class StatsTab(BaseTab):
-    def __init__(self, master, client, currency_names, status_cb, **kw):
-        super().__init__(master, client, currency_names, status_cb, **kw)
+    def __init__(self, master, client, currency_names, status_cb, settings=None, **kw):
+        super().__init__(master, client, currency_names, status_cb, settings, **kw)
         self._build()
 
     def _build(self):
         sb = _sidebar(self, "Statistics")
         inner = ctk.CTkFrame(sb, fg_color="transparent")
         inner.pack(fill="x", padx=PAD_MD)
-        self._base_e = _date_entry(inner, "Base", "EUR")
-        self._quote_e = _date_entry(inner, "Quote", "USD")
-        self._start_e = _date_entry(
-            inner, "Start", (date.today() - timedelta(days=365)).isoformat()
+
+        s = self._settings
+        saved_base = s.get("stats_base", "EUR") if s else "EUR"
+        saved_quote = s.get("stats_quote", "USD") if s else "USD"
+        saved_start = (
+            s.get("stats_start", (date.today() - timedelta(days=365)).isoformat())
+            if s
+            else (date.today() - timedelta(days=365)).isoformat()
         )
-        self._end_e = _date_entry(inner, "End", date.today().isoformat())
+        saved_end = (
+            s.get("stats_end", date.today().isoformat())
+            if s
+            else date.today().isoformat()
+        )
+
+        self._base_e = _date_entry(inner, "Base", saved_base)
+        self._quote_e = _date_entry(inner, "Quote", saved_quote)
+        self._start_e = _date_entry(inner, "Start", saved_start)
+        self._end_e = _date_entry(inner, "End", saved_end)
         _btn(inner, "📐  Analyse", self._fetch).pack(fill="x", pady=PAD_MD)
+
+        HSeparator(sb).pack(fill="x", padx=PAD_MD, pady=PAD_MD)
+        _quick_range_row(sb, self._start_e, self._end_e, self._fetch)
 
         main = ctk.CTkFrame(self, fg_color="transparent")
         main.pack(side="left", fill="both", expand=True, padx=PAD_LG, pady=PAD_LG)
@@ -757,8 +1012,12 @@ class StatsTab(BaseTab):
 
         HSeparator(main).pack(fill="x", pady=PAD_MD)
         SectionHeader(main, "Rate Chart").pack(anchor="w", pady=(0, PAD_SM))
-        self._chart = ChartPanel(main)
+
+        chart_wrap = ctk.CTkFrame(main, fg_color="transparent")
+        chart_wrap.pack(fill="both", expand=True)
+        self._chart = ChartPanel(chart_wrap)
         self._chart.pack(fill="both", expand=True)
+        self._skeleton = SkeletonFrame(chart_wrap)
 
     def _fetch(self):
         base = self._base_e.get().strip().upper() or "EUR"
@@ -766,10 +1025,13 @@ class StatsTab(BaseTab):
         start = self._start_e.get().strip()
         end = self._end_e.get().strip()
 
+        if self._settings:
+            self._settings.set("stats_base", base)
+            self._settings.set("stats_quote", quote)
+            self._settings.set("stats_start", start)
+            self._settings.set("stats_end", end)
+
         def work():
-            # get_time_series is called inside get_volatility_stats; the result
-            # is cached so the second call here is a cheap cache hit, avoiding a
-            # redundant network round-trip.
             stats = self._client.get_volatility_stats(base, quote, start, end)
             series = self._client.get_time_series(start, end, base, [quote])
             return stats, series
@@ -803,7 +1065,7 @@ class StatsTab(BaseTab):
             self._chart.plot_series(series, base, quote)
             self._status(f"Statistics  {base}/{quote}  ({start} → {end})", "ok")
 
-        self._run(work, done)
+        self._run(work, done, skeleton=self._skeleton)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -812,8 +1074,11 @@ class StatsTab(BaseTab):
 
 
 class HeatmapTab(BaseTab):
-    def __init__(self, master, client, currency_names, status_cb, **kw):
-        super().__init__(master, client, currency_names, status_cb, **kw)
+    def __init__(self, master, client, currency_names, status_cb, settings=None, **kw):
+        super().__init__(master, client, currency_names, status_cb, settings, **kw)
+        self._last_data: dict[int, float] = {}
+        self._last_base = "EUR"
+        self._last_quote = "USD"
         self._build()
 
     def _build(self):
@@ -835,15 +1100,73 @@ class HeatmapTab(BaseTab):
             justify="left",
         ).pack(padx=PAD_MD)
 
+        # Export buttons
+        HSeparator(sb).pack(fill="x", padx=PAD_MD, pady=PAD_MD)
+        _btn(sb, "⬇  CSV", self._do_csv, accent=False).pack(
+            padx=PAD_MD, pady=2, fill="x"
+        )
+        _btn(sb, "⬇  JSON", self._do_json, accent=False).pack(
+            padx=PAD_MD, pady=2, fill="x"
+        )
+
         main = ctk.CTkFrame(self, fg_color="transparent")
         main.pack(side="left", fill="both", expand=True)
-        self._chart = ChartPanel(main)
-        self._chart.pack(fill="both", expand=True, padx=PAD_MD, pady=PAD_MD)
 
-        # summary table frame
+        chart_wrap = ctk.CTkFrame(main, fg_color="transparent")
+        chart_wrap.pack(fill="both", expand=True, padx=PAD_MD, pady=PAD_MD)
+        self._chart = ChartPanel(chart_wrap)
+        self._chart.pack(fill="both", expand=True)
+        self._skeleton = SkeletonFrame(chart_wrap)
+
         self._summary_frame = ctk.CTkScrollableFrame(main, height=100, fg_color=BG_CARD)
         self._summary_frame.pack(fill="x", padx=PAD_MD, pady=(0, PAD_MD))
         self._summary_labels: list = []
+
+    def _do_csv(self):
+        if not self._last_data:
+            return
+        p = filedialog.asksaveasfilename(
+            defaultextension=".csv",
+            filetypes=[("CSV", "*.csv")],
+            initialfile=default_filename("heatmap", "csv"),
+        )
+        if p:
+            import csv as _csv
+
+            with open(p, "w", newline="", encoding="utf-8") as f:
+                w = _csv.DictWriter(
+                    f, fieldnames=["year", "base", "quote", "pct_change"]
+                )
+                w.writeheader()
+                for yr, chg in sorted(self._last_data.items()):
+                    w.writerow(
+                        {
+                            "year": yr,
+                            "base": self._last_base,
+                            "quote": self._last_quote,
+                            "pct_change": round(chg, 6),
+                        }
+                    )
+            self._status(f"Exported → {p}", "ok")
+
+    def _do_json(self):
+        if not self._last_data:
+            return
+        p = filedialog.asksaveasfilename(
+            defaultextension=".json",
+            filetypes=[("JSON", "*.json")],
+            initialfile=default_filename("heatmap", "json"),
+        )
+        if p:
+            payload = {
+                "base": self._last_base,
+                "quote": self._last_quote,
+                "annual_changes": {
+                    str(yr): chg for yr, chg in sorted(self._last_data.items())
+                },
+            }
+            export_to_json(payload, p)
+            self._status(f"Exported → {p}", "ok")
 
     def _fetch(self):
         base = self._base_e.get().strip().upper() or "EUR"
@@ -851,7 +1174,7 @@ class HeatmapTab(BaseTab):
         try:
             sy = int(self._start_yr.get().strip())
             ey = int(self._end_yr.get().strip())
-        except:
+        except Exception:
             sy, ey = 2000, date.today().year
 
         def work():
@@ -861,8 +1184,10 @@ class HeatmapTab(BaseTab):
             if err:
                 self._status(f"Error: {err}", "error")
                 return
+            self._last_data = data
+            self._last_base = base
+            self._last_quote = quote
             self._chart.plot_heatmap(data, base, quote)
-            # summary table
             for w in self._summary_labels:
                 w.destroy()
             self._summary_labels.clear()
@@ -901,7 +1226,7 @@ class HeatmapTab(BaseTab):
                 self._summary_labels += [yl, cl]
             self._status(f"Annual heatmap  {base}/{quote}  {sy}–{ey}", "ok")
 
-        self._run(work, done)
+        self._run(work, done, skeleton=self._skeleton)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -910,8 +1235,10 @@ class HeatmapTab(BaseTab):
 
 
 class MatrixTab(BaseTab):
-    def __init__(self, master, client, currency_names, status_cb, **kw):
-        super().__init__(master, client, currency_names, status_cb, **kw)
+    def __init__(self, master, client, currency_names, status_cb, settings=None, **kw):
+        super().__init__(master, client, currency_names, status_cb, settings, **kw)
+        self._last_matrix: dict = {}
+        self._last_codes: list[str] = []
         self._build()
 
     def _build(self):
@@ -926,7 +1253,7 @@ class MatrixTab(BaseTab):
         ).pack(anchor="w")
 
         self._scroll = ctk.CTkScrollableFrame(
-            inner, height=280, fg_color=BG_INPUT, corner_radius=CORNER_RADIUS
+            inner, height=260, fg_color=BG_INPUT, corner_radius=CORNER_RADIUS
         )
         self._scroll.pack(fill="x")
         self._check_vars: dict[str, ctk.BooleanVar] = {}
@@ -955,13 +1282,64 @@ class MatrixTab(BaseTab):
             justify="left",
         ).pack(padx=PAD_MD)
 
+        # Export buttons
+        HSeparator(sb).pack(fill="x", padx=PAD_MD, pady=PAD_MD)
+        _btn(sb, "⬇  CSV", self._do_csv, accent=False).pack(
+            padx=PAD_MD, pady=2, fill="x"
+        )
+        _btn(sb, "⬇  JSON", self._do_json, accent=False).pack(
+            padx=PAD_MD, pady=2, fill="x"
+        )
+
         main = ctk.CTkFrame(self, fg_color="transparent")
         main.pack(side="left", fill="both", expand=True)
-        self._chart = ChartPanel(main)
-        self._chart.pack(fill="both", expand=True, padx=PAD_MD, pady=PAD_MD)
+
+        chart_wrap = ctk.CTkFrame(main, fg_color="transparent")
+        chart_wrap.pack(fill="both", expand=True, padx=PAD_MD, pady=PAD_MD)
+        self._chart = ChartPanel(chart_wrap)
+        self._chart.pack(fill="both", expand=True)
+        self._skeleton = SkeletonFrame(chart_wrap)
 
         self._table_frame = ctk.CTkScrollableFrame(main, height=200, fg_color=BG_CARD)
         self._table_frame.pack(fill="x", padx=PAD_MD, pady=(0, PAD_MD))
+
+    def _do_csv(self):
+        if not self._last_matrix or not self._last_codes:
+            return
+        p = filedialog.asksaveasfilename(
+            defaultextension=".csv",
+            filetypes=[("CSV", "*.csv")],
+            initialfile=default_filename("matrix", "csv"),
+        )
+        if p:
+            import csv as _csv
+
+            with open(p, "w", newline="", encoding="utf-8") as f:
+                w = _csv.DictWriter(f, fieldnames=["base", "quote", "rate"])
+                w.writeheader()
+                for b in self._last_codes:
+                    for q in self._last_codes:
+                        val = self._last_matrix.get(b, {}).get(q)
+                        w.writerow(
+                            {
+                                "base": b,
+                                "quote": q,
+                                "rate": val if val is not None else "",
+                            }
+                        )
+            self._status(f"Exported → {p}", "ok")
+
+    def _do_json(self):
+        if not self._last_matrix:
+            return
+        p = filedialog.asksaveasfilename(
+            defaultextension=".json",
+            filetypes=[("JSON", "*.json")],
+            initialfile=default_filename("matrix", "json"),
+        )
+        if p:
+            export_to_json({"codes": self._last_codes, "matrix": self._last_matrix}, p)
+            self._status(f"Exported → {p}", "ok")
 
     def _fetch(self):
         codes = [c for c, v in self._check_vars.items() if v.get()][:10]
@@ -976,8 +1354,9 @@ class MatrixTab(BaseTab):
             if err:
                 self._status(f"Error: {err}", "error")
                 return
+            self._last_matrix = matrix
+            self._last_codes = codes
             self._chart.plot_matrix_heatmap(matrix, codes)
-            # Text table
             for w in self._table_frame.winfo_children():
                 w.destroy()
             # header row
@@ -1017,7 +1396,7 @@ class MatrixTab(BaseTab):
                     ).grid(row=i + 1, column=j + 1, padx=2, pady=1)
             self._status(f"Cross-rate matrix for {len(codes)} currencies", "ok")
 
-        self._run(work, done)
+        self._run(work, done, skeleton=self._skeleton)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1028,13 +1407,19 @@ class MatrixTab(BaseTab):
 class WatchlistTab(BaseTab):
     SAVE_FILE = "watchlist.json"
 
-    def __init__(self, master, client, currency_names, status_cb, **kw):
-        super().__init__(master, client, currency_names, status_cb, **kw)
+    def __init__(self, master, client, currency_names, status_cb, settings=None, **kw):
+        super().__init__(master, client, currency_names, status_cb, settings, **kw)
         self._pairs: list[tuple] = []
         self._load_saved()
         self._build()
 
     def _load_saved(self):
+        # Prefer settings-based persistence; fall back to watchlist.json for compatibility
+        if self._settings:
+            saved = self._settings.get("watchlist_pairs")
+            if saved:
+                self._pairs = [tuple(p) for p in saved]
+                return
         try:
             with open(self.SAVE_FILE) as f:
                 self._pairs = [tuple(p) for p in json.load(f)]
@@ -1047,6 +1432,8 @@ class WatchlistTab(BaseTab):
             ]
 
     def _save_pairs(self):
+        if self._settings:
+            self._settings.set("watchlist_pairs", [list(p) for p in self._pairs])
         try:
             with open(self.SAVE_FILE, "w") as f:
                 json.dump(self._pairs, f)
@@ -1095,7 +1482,7 @@ class WatchlistTab(BaseTab):
 
         ctk.CTkLabel(
             sb,
-            text="Pairs persist between sessions.\nClick a pair to plot it.",
+            text="Pairs persist between sessions.\nClick ★ to pin to the top.\nPinned pairs appear first.",
             font=FONT_SMALL,
             text_color=TEXT_MUTED,
             wraplength=200,
@@ -1105,8 +1492,10 @@ class WatchlistTab(BaseTab):
         main = ctk.CTkFrame(self, fg_color="transparent")
         main.pack(side="left", fill="both", expand=True, padx=PAD_LG, pady=PAD_LG)
 
-        SectionHeader(main, "Watched Pairs").pack(anchor="w", pady=(0, PAD_SM))
-        self._wl = WatchlistPanel(main)
+        SectionHeader(main, "Watched Pairs  (★ to pin)").pack(
+            anchor="w", pady=(0, PAD_SM)
+        )
+        self._wl = WatchlistPanel(main, settings=self._settings)
         self._wl.pack(fill="both", expand=False)
 
         HSeparator(main).pack(fill="x", pady=PAD_MD)
@@ -1141,7 +1530,6 @@ class WatchlistTab(BaseTab):
                 self._status(f"Error: {err}", "error")
                 return
             self._wl.refresh(snaps)
-            # plot first pair
             if self._pairs:
                 base, quote = self._pairs[0]
                 self._plot_pair(base, quote)
@@ -1168,8 +1556,8 @@ class WatchlistTab(BaseTab):
 
 
 class CurrencyDetailTab(BaseTab):
-    def __init__(self, master, client, currency_names, status_cb, **kw):
-        super().__init__(master, client, currency_names, status_cb, **kw)
+    def __init__(self, master, client, currency_names, status_cb, settings=None, **kw):
+        super().__init__(master, client, currency_names, status_cb, settings, **kw)
         self._build()
 
     def _build(self):
@@ -1271,8 +1659,8 @@ class CurrencyDetailTab(BaseTab):
 
 
 class ProvidersTab(BaseTab):
-    def __init__(self, master, client, currency_names, status_cb, **kw):
-        super().__init__(master, client, currency_names, status_cb, **kw)
+    def __init__(self, master, client, currency_names, status_cb, settings=None, **kw):
+        super().__init__(master, client, currency_names, status_cb, settings, **kw)
         self._build()
 
     def _build(self):
@@ -1316,7 +1704,6 @@ class ProvidersTab(BaseTab):
             self._rows.clear()
             providers = data if isinstance(data, list) else data.get("providers", [])
             self._c_cnt.set_value(str(len(providers)))
-            # Header
             hdr = ctk.CTkFrame(self._list, fg_color=BG_CARD, corner_radius=4)
             hdr.pack(fill="x", pady=1)
             for col, w, lbl in [

@@ -21,6 +21,7 @@ from ui.tabs import (
 )
 from api.client import FrankfurterClient
 from utils.workers import AsyncWorker
+from utils.settings import Settings
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("dark-blue")
@@ -55,10 +56,14 @@ class App(ctk.CTk):
 
         self._client = FrankfurterClient()
         self._currency_names: dict[str, str] = {}
+        self._settings = Settings()
+        # Map label → built tab widget (for keyboard-shortcut Enter dispatch)
+        self._built_tab_widgets: dict[str, object] = {}
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self._build_skeleton()
         self._load_currencies()
+        self._bind_shortcuts()
 
     def _on_close(self):
         try:
@@ -71,11 +76,43 @@ class App(ctk.CTk):
         sys.exit(0)
 
     # ------------------------------------------------------------------
-    # Layout skeleton (shown immediately, tabs populated after currency load)
+    # Keyboard shortcuts
+    # ------------------------------------------------------------------
+
+    def _bind_shortcuts(self):
+        # Ctrl+1 … Ctrl+9  — switch to tab by 1-based index
+        for i in range(1, 10):
+            self.bind_all(
+                f"<Control-Key-{i}>",
+                lambda e, idx=i - 1: self._switch_tab(idx),
+            )
+        # Enter — trigger fetch on the active tab
+        self.bind_all("<Return>", self._on_enter)
+
+    def _switch_tab(self, idx: int) -> None:
+        if idx < len(self.TABS):
+            label = self.TABS[idx][0]
+            try:
+                self._tabview.set(label)
+                self._build_tab(label)
+            except Exception:
+                pass
+
+    def _on_enter(self, event=None) -> None:
+        """Delegate Enter to the active tab's _fetch method if it exists."""
+        try:
+            label = self._tabview.get()
+            widget = self._built_tab_widgets.get(label)
+            if widget and hasattr(widget, "_fetch"):
+                widget._fetch()
+        except Exception:
+            pass
+
+    # ------------------------------------------------------------------
+    # Layout skeleton
     # ------------------------------------------------------------------
 
     def _build_skeleton(self):
-        # ── Title bar ──────────────────────────────────────────────────
         titlebar = ctk.CTkFrame(self, fg_color=BG_CARD, height=56, corner_radius=0)
         titlebar.pack(fill="x", side="top")
 
@@ -93,7 +130,6 @@ class App(ctk.CTk):
             text_color=TEXT_MUTED,
         ).pack(side="left", pady=PAD_MD)
 
-        # ECB source badge
         ctk.CTkLabel(
             titlebar,
             text="Source: European Central Bank  •  api.frankfurter.dev",
@@ -101,11 +137,9 @@ class App(ctk.CTk):
             text_color=TEXT_DIM,
         ).pack(side="right", padx=PAD_LG)
 
-        # ── Status bar ─────────────────────────────────────────────────
         self._statusbar = StatusBar(self)
         self._statusbar.pack(fill="x", side="bottom")
 
-        # ── Tab view ───────────────────────────────────────────────────
         self._tabview = ctk.CTkTabview(
             self,
             fg_color=BG_DARK,
@@ -121,14 +155,12 @@ class App(ctk.CTk):
         )
         self._tabview.pack(fill="both", expand=True)
 
-        # Pre-create tab frames (content added after currency load)
         self._tab_frames: dict[str, ctk.CTkFrame] = {}
         for label, _ in self.TABS:
             tab = self._tabview.add(label)
             tab.configure(fg_color=BG_DARK)
             self._tab_frames[label] = tab
 
-        # Loading label shown until currencies arrive
         self._loading_lbl = ctk.CTkLabel(
             self._tab_frames[self.TABS[0][0]],
             text="⠙  Loading currencies from api.frankfurter.dev…",
@@ -165,14 +197,10 @@ class App(ctk.CTk):
         AsyncWorker(work, done, root=self).start()
 
     def _build_tabs(self):
-        # Store tab classes for lazy construction
         self._tab_classes: dict[str, type] = {label: cls for label, cls in self.TABS}
         self._built_tabs: set[str] = set()
 
-        # Build only the first tab (Dashboard) immediately so the app feels ready
         self._build_tab(self.TABS[0][0])
-
-        # All remaining tabs are built lazily on first click
         self._tabview.configure(command=self._on_tab_change)
 
         self._statusbar.set_status(
@@ -190,8 +218,10 @@ class App(ctk.CTk):
             client=self._client,
             currency_names=self._currency_names,
             status_cb=self._statusbar.set_status,
+            settings=self._settings,
         )
         tab_widget.pack(fill="both", expand=True)
+        self._built_tab_widgets[label] = tab_widget
 
     def _on_tab_change(self):
         label = self._tabview.get()

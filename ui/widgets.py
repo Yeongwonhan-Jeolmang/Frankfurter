@@ -115,26 +115,26 @@ class StatusBar(ctk.CTkFrame):
 
 class RateTable(ctk.CTkScrollableFrame):
     """
-    Scrollable table of exchange rates.
+    Scrollable table of exchange rates with a clickable ★ pin column.
 
     Performance: rows are created once and their labels are reconfigured
     in-place rather than destroyed and recreated on every filter change.
-    Rows beyond the visible set are hidden with grid_remove() instead of
-    being destroyed.
+    Rows beyond the visible set are hidden with grid_remove().
+    Pinned (starred) pairs always float to the top.
     """
 
-    HEADERS = ("Currency", "Code", "Rate", "Inverse", "Change")
-    _MAX_ROWS = 220  # upper bound — pre-allocate this many label rows
+    HEADERS = ("★", "Currency", "Code", "Rate", "Inverse", "Change")
+    _MAX_ROWS = 220
 
-    def __init__(self, master, **kw):
+    def __init__(self, master, settings=None, **kw):
         super().__init__(master, fg_color=BG_DARK, **kw)
+        self._settings = settings
         self._prev: dict[str, float] = {}
         self._filter: str = ""
         self._raw_rates: dict[str, float] = {}
         self._raw_names: dict[str, str] = {}
         self._raw_base: str = "EUR"
-        # Pre-allocated label widgets: list of (row_frame, [label, ...])
-        self._pool: list[tuple[ctk.CTkFrame, list[ctk.CTkLabel]]] = []
+        self._pool: list[list[ctk.CTkLabel]] = []
         self._build_header()
         self._preallocate_pool()
 
@@ -144,25 +144,33 @@ class RateTable(ctk.CTkScrollableFrame):
                 self, text=h, font=FONT_SUBHEAD, text_color=ACCENT_GOLD, anchor="w"
             ).grid(row=0, column=c, sticky="ew", padx=(PAD_SM, PAD_MD), pady=4)
         ctk.CTkFrame(self, height=1, fg_color=BORDER_COLOR).grid(
-            row=1, column=0, columnspan=5, sticky="ew", pady=2
+            row=1, column=0, columnspan=len(self.HEADERS), sticky="ew", pady=2
         )
-        for c in range(5):
+        # Star column is narrow; rest expand
+        self.grid_columnconfigure(0, weight=0, minsize=32)
+        for c in range(1, len(self.HEADERS)):
             self.grid_columnconfigure(c, weight=1)
 
     def _preallocate_pool(self) -> None:
-        """Create _MAX_ROWS hidden label rows up front so _render never destroys widgets."""
         for i in range(self._MAX_ROWS):
             bg = BG_CARD if i % 2 == 0 else BG_DARK
             labels: list[ctk.CTkLabel] = []
-            for c in range(5):
+            for c in range(len(self.HEADERS)):
+                is_star = c == 0
                 lbl = ctk.CTkLabel(
                     self,
                     text="",
-                    font=FONT_MONO if c >= 2 else FONT_BODY,
-                    text_color=TEXT_PRIMARY,
-                    anchor="w",
+                    font=(
+                        ("Helvetica Neue", 12)
+                        if is_star
+                        else (FONT_MONO if c >= 3 else FONT_BODY)
+                    ),
+                    text_color=TEXT_DIM if is_star else TEXT_PRIMARY,
+                    anchor="center" if is_star else "w",
                     fg_color=bg,
                     corner_radius=0,
+                    cursor="hand2" if is_star else "arrow",
+                    width=30 if is_star else 0,
                 )
                 lbl.grid(
                     row=i + 2,
@@ -171,9 +179,9 @@ class RateTable(ctk.CTkScrollableFrame):
                     padx=(PAD_SM, PAD_MD),
                     pady=2,
                 )
-                lbl.grid_remove()  # hidden until needed
+                lbl.grid_remove()
                 labels.append(lbl)
-            self._pool.append((ctk.CTkFrame(self, fg_color="transparent"), labels))
+            self._pool.append(labels)
 
     def populate(
         self,
@@ -193,6 +201,12 @@ class RateTable(ctk.CTkScrollableFrame):
         self._render()
 
     def _render(self) -> None:
+        pinned_quotes: set[str] = set()
+        if self._settings:
+            pinned_quotes = {
+                q for b, q in self._settings.get_favourites() if b == self._raw_base
+            }
+
         items = sorted(self._raw_rates.items())
         if self._filter:
             items = [
@@ -202,16 +216,22 @@ class RateTable(ctk.CTkScrollableFrame):
                 or self._filter in self._raw_names.get(c, "").upper()
             ]
 
+        # Pinned pairs float to the top
+        pinned = [(c, r) for c, r in items if c in pinned_quotes]
+        unpinned = [(c, r) for c, r in items if c not in pinned_quotes]
+        items = pinned + unpinned
+
         # Hide all pool rows first
-        for _, labels in self._pool:
+        for labels in self._pool:
             for lbl in labels:
                 lbl.grid_remove()
 
         for i, (code, rate) in enumerate(items):
             if i >= self._MAX_ROWS:
                 break
-            _, labels = self._pool[i]
+            labels = self._pool[i]
             bg = BG_CARD if i % 2 == 0 else BG_DARK
+            is_pinned = code in pinned_quotes
 
             name = self._raw_names.get(code, code)
             inv = round(1 / rate, 6) if rate else 0
@@ -229,19 +249,51 @@ class RateTable(ctk.CTkScrollableFrame):
                 ct = "→ 0.0000%"
                 cc = TEXT_MUTED
 
-            vals = [name, code, f"{rate:.6f}", f"{inv:.6f}", ct]
-            colors = [TEXT_PRIMARY, ACCENT_GOLD, TEXT_PRIMARY, TEXT_MUTED, cc]
+            row_vals = [
+                "★" if is_pinned else "☆",
+                name,
+                code,
+                f"{rate:.6f}",
+                f"{inv:.6f}",
+                ct,
+            ]
+            row_colors = [
+                ACCENT_GOLD if is_pinned else TEXT_DIM,
+                TEXT_PRIMARY,
+                ACCENT_GOLD,
+                TEXT_PRIMARY,
+                TEXT_MUTED,
+                cc,
+            ]
+            row_fonts = [
+                ("Helvetica Neue", 12),
+                FONT_BODY,
+                FONT_BODY,
+                FONT_MONO,
+                FONT_MONO,
+                FONT_MONO,
+            ]
 
-            for c, (lbl, v, col) in enumerate(zip(labels, vals, colors)):
-                lbl.configure(
-                    text=v,
-                    text_color=col,
-                    fg_color=bg,
-                    font=FONT_MONO if c >= 2 else FONT_BODY,
-                )
-                lbl.grid()  # make visible
+            for c, (lbl, v, col, fnt) in enumerate(
+                zip(labels, row_vals, row_colors, row_fonts)
+            ):
+                lbl.configure(text=v, text_color=col, fg_color=bg, font=fnt)
+                lbl.grid()
+
+            # Rebind star toggle with current code snapshot
+            star_lbl = labels[0]
+            _b, _q = self._raw_base, code
+            star_lbl.bind(
+                "<Button-1>",
+                lambda e, b=_b, q=_q: self._toggle_pin(b, q),
+            )
 
         self._prev = dict(self._raw_rates)
+
+    def _toggle_pin(self, base: str, quote: str) -> None:
+        if self._settings:
+            self._settings.toggle_favourite(base, quote)
+            self._render()
 
 
 class SearchEntry(ctk.CTkFrame):
@@ -283,7 +335,6 @@ class SearchEntry(ctk.CTkFrame):
         ).pack(side="left", padx=(2, 0))
 
     def _on_write(self, *_) -> None:
-        # Cancel any pending debounce timer
         if self._after_id is not None:
             try:
                 self._entry.after_cancel(self._after_id)
@@ -304,44 +355,69 @@ class SearchEntry(ctk.CTkFrame):
 
 
 class WatchlistPanel(ctk.CTkScrollableFrame):
-    """Compact live watchlist rows — reuses widgets to avoid destroy/recreate churn."""
+    """Compact live watchlist rows — starred pairs sorted to the top."""
 
-    _COLS = 3  # pair label, rate, date
-
-    def __init__(self, master, on_select=None, **kw):
+    def __init__(self, master, settings=None, on_select=None, **kw):
         super().__init__(master, fg_color=BG_DARK, **kw)
+        self._settings = settings
         self._on_select = on_select
         self._pairs: list[tuple[str, str]] = []
-        # Pool of (frame, [label, label, label]) reused in place
-        self._pool: list[tuple[ctk.CTkFrame, list[ctk.CTkLabel]]] = []
+        self._pool: list[tuple[ctk.CTkFrame, list]] = []
+        self._last_snaps: list[dict] = []
 
     def set_pairs(self, pairs: list[tuple[str, str]]) -> None:
         self._pairs = pairs
 
     def _ensure_pool(self, n: int) -> None:
-        """Grow the pool to at least n rows."""
         while len(self._pool) < n:
             i = len(self._pool)
             bg = BG_CARD if i % 2 == 0 else BG_DARK
             row = ctk.CTkFrame(self, fg_color=bg, corner_radius=4)
-            labels = [
-                ctk.CTkLabel(
-                    row,
-                    text="",
-                    font=FONT_SUBHEAD,
-                    text_color=ACCENT_GOLD,
-                    width=80,
-                    anchor="w",
-                ),
-                ctk.CTkLabel(row, text="", font=FONT_MONO, text_color=TEXT_PRIMARY),
-                ctk.CTkLabel(row, text="", font=FONT_SMALL, text_color=TEXT_DIM),
-            ]
-            labels[0].pack(side="left", padx=PAD_SM, pady=6)
-            labels[1].pack(side="left", padx=PAD_SM)
-            labels[2].pack(side="right", padx=PAD_MD)
-            self._pool.append((row, labels))
+
+            star_lbl = ctk.CTkLabel(
+                row,
+                text="☆",
+                font=("Helvetica Neue", 13),
+                text_color=TEXT_DIM,
+                width=24,
+                cursor="hand2",
+            )
+            star_lbl.pack(side="left", padx=(PAD_SM, 2), pady=6)
+
+            pair_lbl = ctk.CTkLabel(
+                row,
+                text="",
+                font=FONT_SUBHEAD,
+                text_color=ACCENT_GOLD,
+                width=80,
+                anchor="w",
+            )
+            pair_lbl.pack(side="left", padx=PAD_SM, pady=6)
+
+            rate_lbl = ctk.CTkLabel(
+                row, text="", font=FONT_MONO, text_color=TEXT_PRIMARY
+            )
+            rate_lbl.pack(side="left", padx=PAD_SM)
+
+            date_lbl = ctk.CTkLabel(row, text="", font=FONT_SMALL, text_color=TEXT_DIM)
+            date_lbl.pack(side="right", padx=PAD_MD)
+
+            self._pool.append((row, [star_lbl, pair_lbl, rate_lbl, date_lbl]))
 
     def refresh(self, snapshots: list[dict]) -> None:
+        self._last_snaps = snapshots
+
+        # Sort starred pairs to top
+        if self._settings:
+            favs = {(str(b), str(q)) for b, q in self._settings.get_favourites()}
+
+            def sort_key(snap):
+                b = str(snap.get("base", "?"))
+                q = str(snap.get("quote", "?"))
+                return (0 if (b, q) in favs else 1, b, q)
+
+            snapshots = sorted(snapshots, key=sort_key)
+
         self._ensure_pool(len(snapshots))
         for i, snap in enumerate(snapshots):
             base = str(snap.get("base", "?"))
@@ -350,17 +426,34 @@ class WatchlistPanel(ctk.CTkScrollableFrame):
             rate_s = f"{rate:.5f}" if rate else "N/A"
             date_s = str(snap.get("date", ""))
             bg = BG_CARD if i % 2 == 0 else BG_DARK
+            is_fav = bool(self._settings and self._settings.is_favourite(base, quote))
 
-            row, labels = self._pool[i]
+            row, widgets = self._pool[i]
+            star_lbl, pair_lbl, rate_lbl, date_lbl = widgets
             row.configure(fg_color=bg)
-            labels[0].configure(text=f"{base}/{quote}")
-            labels[1].configure(text=rate_s)
-            labels[2].configure(text=date_s)
+            star_lbl.configure(
+                text="★" if is_fav else "☆",
+                text_color=ACCENT_GOLD if is_fav else TEXT_DIM,
+            )
+            pair_lbl.configure(text=f"{base}/{quote}")
+            rate_lbl.configure(text=rate_s)
+            date_lbl.configure(text=date_s)
+
+            star_lbl.bind(
+                "<Button-1>",
+                lambda e, b=base, q=quote: self._toggle_fav(b, q),
+            )
+
             row.pack(fill="x", pady=1)
 
-        # Hide unused rows
         for i in range(len(snapshots), len(self._pool)):
             self._pool[i][0].pack_forget()
+
+    def _toggle_fav(self, base: str, quote: str) -> None:
+        if self._settings:
+            self._settings.toggle_favourite(base, quote)
+            # Re-render with stored snapshot to reflect new order
+            self.refresh(self._last_snaps)
 
 
 class LoadingOverlay(ctk.CTkFrame):
@@ -390,3 +483,62 @@ class LoadingOverlay(ctk.CTkFrame):
         self._idx = (self._idx + 1) % len(self.FRAMES)
         self._lbl.configure(text=f"{self.FRAMES[self._idx]}  Fetching data…")
         self.after(80, self._tick)
+
+
+class SkeletonFrame(ctk.CTkFrame):
+    """
+    Animated loading skeleton — place() over a content frame while data is
+    in flight.  Call show() before the request and hide() in the done callback.
+    """
+
+    FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+
+    def __init__(self, master, rows: int = 7, **kw):
+        super().__init__(master, fg_color=BG_DARK, corner_radius=0, **kw)
+        self._after_id: str | None = None
+        self._fidx = 0
+        self._bars: list[ctk.CTkFrame] = []
+        self._phase = False
+
+        self._spinner = ctk.CTkLabel(
+            self,
+            text="⠋  Loading…",
+            font=("Courier New", 12),
+            text_color=ACCENT_GOLD,
+        )
+        self._spinner.pack(pady=(PAD_LG + 4, PAD_MD))
+
+        widths = [0.85, 0.65, 0.78, 0.55, 0.82, 0.60, 0.72]
+        for j in range(rows):
+            outer = ctk.CTkFrame(self, fg_color="transparent")
+            outer.pack(fill="x", padx=PAD_LG * 3, pady=4)
+            bar = ctk.CTkFrame(outer, fg_color=BG_INPUT, height=16, corner_radius=4)
+            bar.pack(fill="x")
+            self._bars.append(bar)
+
+    # ── public ────────────────────────────────────────────────────────────────
+
+    def show(self) -> None:
+        self.place(relx=0, rely=0, relwidth=1, relheight=1)
+        self.lift()
+        self._animate()
+
+    def hide(self) -> None:
+        if self._after_id:
+            try:
+                self.after_cancel(self._after_id)
+            except Exception:
+                pass
+            self._after_id = None
+        self.place_forget()
+
+    # ── animation ─────────────────────────────────────────────────────────────
+
+    def _animate(self) -> None:
+        self._fidx = (self._fidx + 1) % len(self.FRAMES)
+        self._spinner.configure(text=f"{self.FRAMES[self._fidx]}  Loading data…")
+        self._phase = not self._phase
+        shade = BG_HOVER if self._phase else BG_INPUT
+        for bar in self._bars:
+            bar.configure(fg_color=shade)
+        self._after_id = self.after(140, self._animate)

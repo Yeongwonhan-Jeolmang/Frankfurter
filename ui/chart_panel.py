@@ -48,6 +48,7 @@ class ChartPanel(ctk.CTkFrame):
         self._data: dict[str, Any] = {}
         self._base: str = "EUR"
         self._quote: str = "USD"
+        self._pct_mode: bool = False
         # Cache parsed series so _series() doesn't re-parse on every render
         self._series_cache: dict[str, tuple[list[datetime], list[float]]] = {}
         self._build_toolbar()
@@ -92,7 +93,6 @@ class ChartPanel(ctk.CTkFrame):
         self._fig.set_facecolor(BG_CARD)
         self._ax = self._fig.add_subplot(111)
         _style(self._ax)
-        # Explicit type annotation avoids the CTkCanvas confusion pyrefly sees
         self._mpl_canvas: FigureCanvasTkAgg = FigureCanvasTkAgg(self._fig, master=self)
         self._mpl_canvas.get_tk_widget().pack(
             fill="both", expand=True, padx=PAD_MD, pady=PAD_SM
@@ -100,7 +100,6 @@ class ChartPanel(ctk.CTkFrame):
         tf = ctk.CTkFrame(self, fg_color=BG_CARD, height=28)
         tf.pack(fill="x", padx=PAD_MD, pady=(0, PAD_SM))
         nav = NavigationToolbar2Tk(self._mpl_canvas, tf)
-        # nav is a plain tk widget — use tk config, not ctk configure
         try:
             nav.config(background=BG_CARD)  # type: ignore[attr-defined]
             for ch in nav.winfo_children():
@@ -114,6 +113,12 @@ class ChartPanel(ctk.CTkFrame):
         self._draw_placeholder()
 
     # ── public ────────────────────────────────────────────────────────────────
+
+    def set_pct_mode(self, enabled: bool) -> None:
+        """Switch between absolute rate and % change from first value."""
+        self._pct_mode = enabled
+        self._series_cache.clear()
+        self._render()
 
     def plot_series(self, data: dict[str, Any], base: str, quote: str) -> None:
         self._data = data
@@ -208,7 +213,6 @@ class ChartPanel(ctk.CTkFrame):
             self._draw_placeholder()
             return
         ctype = self._seg.get()
-        # Reuse axes — clear content without destroying the subplot
         self._ax.cla()
         _style(self._ax)
 
@@ -230,19 +234,16 @@ class ChartPanel(ctk.CTkFrame):
             self._draw_candle()
         elif ctype == "Scatter":
             self._draw_scatter()
-        # draw_idle() schedules the redraw on the next idle cycle — avoids
-        # blocking the GUI thread with an immediate synchronous repaint
         self._mpl_canvas.draw_idle()
 
     def _series(self, quote: str | None = None) -> tuple[list[datetime], list[float]]:
         target = quote or self._quote
-        # Return from cache if available
-        if target in self._series_cache:
-            return self._series_cache[target]
+        cache_key = f"{target}:{'pct' if self._pct_mode else 'abs'}"
+        if cache_key in self._series_cache:
+            return self._series_cache[cache_key]
         rates = self._data.get("rates", {})
         if not rates:
             return [], []
-        # Use pandas for vectorised date parsing — much faster than strptime in a loop
         items = sorted(
             ((d, day[target]) for d, day in rates.items() if target in day),
         )
@@ -251,8 +252,16 @@ class ChartPanel(ctk.CTkFrame):
         date_strs, vals_raw = zip(*items)
         dates: list[datetime] = [pd.Timestamp(d).to_pydatetime() for d in date_strs]
         vals = [float(v) for v in vals_raw]
-        self._series_cache[target] = (dates, vals)
+
+        if self._pct_mode and vals and vals[0] != 0:
+            first = vals[0]
+            vals = [(v - first) / first * 100 for v in vals]
+
+        self._series_cache[cache_key] = (dates, vals)
         return dates, vals
+
+    def _ylabel(self) -> str:
+        return "% Change from Start" if self._pct_mode else "Rate"
 
     def _draw_line(self, all_q: bool = False) -> None:
         rates = self._data.get("rates", {})
@@ -286,7 +295,9 @@ class ChartPanel(ctk.CTkFrame):
                     zorder=5,
                 )
         self._fmt_x(dates if not all_q else [])
-        self._ax.set_title(f"{self._base}/{self._quote}", fontsize=11)
+        suffix = " (% Change)" if self._pct_mode else ""
+        self._ax.set_title(f"{self._base}/{self._quote}{suffix}", fontsize=11)
+        self._ax.set_ylabel(self._ylabel(), fontsize=8)
 
     def _draw_area(self) -> None:
         dates, vals = self._series()
@@ -297,7 +308,9 @@ class ChartPanel(ctk.CTkFrame):
         self._ax.fill_between(d_arr, v_arr, alpha=0.25, color=ACCENT_GOLD)
         self._ax.plot(d_arr, v_arr, color=ACCENT_GOLD, linewidth=2)
         self._fmt_x(dates)
-        self._ax.set_title(f"{self._base}/{self._quote} — Area", fontsize=11)
+        suffix = " (% Change)" if self._pct_mode else " — Area"
+        self._ax.set_title(f"{self._base}/{self._quote}{suffix}", fontsize=11)
+        self._ax.set_ylabel(self._ylabel(), fontsize=8)
 
     def _draw_bar(self) -> None:
         dates, vals = self._series()
@@ -309,7 +322,9 @@ class ChartPanel(ctk.CTkFrame):
         ]
         self._ax.bar(np.array(dates), np.array(vals), color=colors, width=0.8)
         self._fmt_x(dates)
-        self._ax.set_title(f"{self._base}/{self._quote} — Bar", fontsize=11)
+        suffix = " (% Change)" if self._pct_mode else " — Bar"
+        self._ax.set_title(f"{self._base}/{self._quote}{suffix}", fontsize=11)
+        self._ax.set_ylabel(self._ylabel(), fontsize=8)
 
     def _draw_histogram(self) -> None:
         _, vals = self._series()
@@ -323,7 +338,8 @@ class ChartPanel(ctk.CTkFrame):
             mean, color=ACCENT_GOLD, linestyle="--", label=f"Mean: {mean:.4f}"
         )
         self._ax.legend(fontsize=8)
-        self._ax.set_title(f"{self._base}/{self._quote} — Distribution", fontsize=11)
+        suffix = " (% Change)" if self._pct_mode else " — Distribution"
+        self._ax.set_title(f"{self._base}/{self._quote}{suffix}", fontsize=11)
 
     def _draw_rolling(self) -> None:
         dates, vals = self._series()
@@ -353,9 +369,9 @@ class ChartPanel(ctk.CTkFrame):
         )
         self._ax.legend(fontsize=8)
         self._fmt_x(dates)
-        self._ax.set_title(
-            f"{self._base}/{self._quote} — Rolling Averages", fontsize=11
-        )
+        suffix = " (% Change)" if self._pct_mode else " — Rolling Averages"
+        self._ax.set_title(f"{self._base}/{self._quote}{suffix}", fontsize=11)
+        self._ax.set_ylabel(self._ylabel(), fontsize=8)
 
     def _draw_candle(self) -> None:
         """Monthly OHLC candlestick using bar chart approximation."""
@@ -367,7 +383,6 @@ class ChartPanel(ctk.CTkFrame):
         m.columns = ["open", "high", "low", "close"]
         for idx, row in m.iterrows():
             color = ACCENT_GREEN if row["close"] >= row["open"] else ACCENT_RED
-            # Convert Timestamp -> float so matplotlib receives a known numeric type
             x: float = mdates.date2num(idx.to_pydatetime())  # type: ignore[union-attr]
             self._ax.plot(
                 np.array([x, x]),
@@ -395,14 +410,15 @@ class ChartPanel(ctk.CTkFrame):
         self._ax.scatter(
             x, np.array(vals), c=np.array(vals), cmap="YlOrBr", s=12, alpha=0.7
         )
-        self._ax.set_title(f"{self._base}/{self._quote} — Rate Scatter", fontsize=11)
+        suffix = " (% Change)" if self._pct_mode else " — Rate Scatter"
+        self._ax.set_title(f"{self._base}/{self._quote}{suffix}", fontsize=11)
 
     def _draw_multi(self, datasets: dict[str, dict[str, Any]]) -> None:
         for i, (quote, data) in enumerate(datasets.items()):
-            # Temporarily swap in the dataset so _series() can parse it
             prev_data, prev_quote = self._data, self._quote
             self._data = data
             self._quote = quote
+            self._series_cache.clear()
             dates, vals = self._series(quote)
             self._data, self._quote = prev_data, prev_quote
             if dates:
@@ -413,8 +429,10 @@ class ChartPanel(ctk.CTkFrame):
                     label=quote,
                     linewidth=1.8,
                 )
+        self._series_cache.clear()
         self._ax.legend(loc="upper left", fontsize=8, ncol=2)
-        self._ax.set_title(f"{self._base} — Multi-Currency Overlay", fontsize=11)
+        suffix = " (% Change)" if self._pct_mode else " — Multi-Currency Overlay"
+        self._ax.set_title(f"{self._base}{suffix}", fontsize=11)
 
     def _fmt_x(self, dates: list[datetime]) -> None:
         if not dates:
