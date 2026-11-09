@@ -8,13 +8,15 @@ import customtkinter as ctk
 import matplotlib
 
 matplotlib.use("TkAgg")
+from datetime import datetime
+from typing import Any
+
 import matplotlib.dates as mdates
+import matplotlib.ticker as mticker
+import numpy as np
+import pandas as pd
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 from matplotlib.figure import Figure
-from typing import Any
-import pandas as pd
-import numpy as np
-from datetime import datetime
 
 from ui.theme import *
 
@@ -31,6 +33,18 @@ def _style(ax) -> None:
     ax.grid(True, color=BORDER_COLOR, linestyle="--", alpha=0.35)
 
 
+def _month_end_rule() -> str:
+    """pandas >= 2.2 renamed the month-end alias "M" to "ME"."""
+    try:
+        pd.tseries.frequencies.to_offset("ME")
+        return "ME"
+    except ValueError:
+        return "M"
+
+
+_MONTH_END = _month_end_rule()
+
+
 class ChartPanel(ctk.CTkFrame):
     CHART_TYPES = [
         "Line",
@@ -42,24 +56,33 @@ class ChartPanel(ctk.CTkFrame):
         "Candlestick (Monthly)",
         "Scatter",
     ]
+    # Chart types that have a date x-axis and support the hover read-out
+    _HOVERABLE = {"Line", "Area", "Bar", "Multi-Overlay", "Rolling Avg"}
 
-    def __init__(self, master, **kw):
+    def __init__(self, master, show_types: bool = True, **kw):
         super().__init__(master, fg_color=BG_CARD, corner_radius=CORNER_RADIUS, **kw)
         self._data: dict[str, Any] = {}
         self._base: str = "EUR"
         self._quote: str = "USD"
         self._pct_mode: bool = False
+        # "series" | "multi" | "heatmap" | "matrix" — decides what _render draws
+        self._mode: str = "series"
+        self._special: tuple = ()  # payload for heatmap / matrix modes
+        self._show_types = show_types
+        self._colorbar = None
         # Cache parsed series so _series() doesn't re-parse on every render
         self._series_cache: dict[str, tuple[list[datetime], list[float]]] = {}
+        # Hover read-out state: x positions (matplotlib date numbers) and
+        # [(label, y-array, colour)] for every line currently on the axes.
+        self._hover_x: np.ndarray | None = None
+        self._hover_series: list[tuple[str, tuple[np.ndarray, np.ndarray], str]] = []
+        self._hover_artists: tuple = ()
         self._build_toolbar()
         self._build_figure()
 
     def _build_toolbar(self) -> None:
         bar = ctk.CTkFrame(self, fg_color="transparent")
         bar.pack(fill="x", padx=PAD_MD, pady=(PAD_MD, 0))
-        ctk.CTkLabel(bar, text="Chart:", font=FONT_LABEL, text_color=TEXT_MUTED).pack(
-            side="left"
-        )
         self._seg = ctk.CTkSegmentedButton(
             bar,
             values=self.CHART_TYPES,
@@ -73,10 +96,14 @@ class ChartPanel(ctk.CTkFrame):
             command=lambda _: self._render(),
         )
         self._seg.set("Line")
-        self._seg.pack(side="left", padx=PAD_MD)
+        if self._show_types:
+            ctk.CTkLabel(
+                bar, text="Chart:", font=FONT_LABEL, text_color=TEXT_MUTED
+            ).pack(side="left")
+            self._seg.pack(side="left", padx=PAD_MD)
         ctk.CTkButton(
             bar,
-            text="💾 PNG",
+            text="💾 Save",
             width=80,
             height=26,
             fg_color=BG_INPUT,
@@ -94,33 +121,59 @@ class ChartPanel(ctk.CTkFrame):
         self._ax = self._fig.add_subplot(111)
         _style(self._ax)
         self._mpl_canvas: FigureCanvasTkAgg = FigureCanvasTkAgg(self._fig, master=self)
+        self._mpl_canvas.get_tk_widget().configure(bg=BG_CARD, highlightthickness=0)
         self._mpl_canvas.get_tk_widget().pack(
             fill="both", expand=True, padx=PAD_MD, pady=PAD_SM
         )
         tf = ctk.CTkFrame(self, fg_color=BG_CARD, height=28)
         tf.pack(fill="x", padx=PAD_MD, pady=(0, PAD_SM))
-        nav = NavigationToolbar2Tk(self._mpl_canvas, tf)
+        nav = NavigationToolbar2Tk(self._mpl_canvas, tf, pack_toolbar=False)
         try:
             nav.config(background=BG_CARD)  # type: ignore[attr-defined]
             for ch in nav.winfo_children():
-                try:
-                    ch.config(background=BG_CARD)  # type: ignore[attr-defined]
-                except Exception:
-                    pass
+                for opts in (
+                    # buttons / checkbuttons: dark background, light glyphs
+                    dict(
+                        background=BG_CARD,
+                        foreground=TEXT_PRIMARY,
+                        activebackground=BG_HOVER,
+                        activeforeground=TEXT_PRIMARY,
+                        highlightthickness=0,
+                        borderwidth=0,
+                        selectcolor=BG_SELECTED,
+                    ),
+                    dict(background=BG_CARD, foreground=TEXT_MUTED),
+                    dict(background=BG_CARD),
+                ):
+                    try:
+                        ch.config(**opts)  # type: ignore[attr-defined]
+                        break
+                    except Exception:
+                        continue
+            # matplotlib picks light or dark icon variants from the button
+            # colours; re-run that now that the buttons are dark so the icons
+            # are visible instead of black-on-black.
+            nav._rescale()  # type: ignore[attr-defined]
         except Exception:
             pass
         nav.update()
+        nav.pack(side="left", fill="x")
+        self._mpl_canvas.mpl_connect("motion_notify_event", self._on_hover)
+        self._mpl_canvas.mpl_connect("axes_leave_event", self._on_leave)
         self._draw_placeholder()
 
     # ── public ────────────────────────────────────────────────────────────────
 
     def set_pct_mode(self, enabled: bool) -> None:
         """Switch between absolute rate and % change from first value."""
+        if enabled == self._pct_mode:
+            return
         self._pct_mode = enabled
         self._series_cache.clear()
         self._render()
 
     def plot_series(self, data: dict[str, Any], base: str, quote: str) -> None:
+        self._mode = "series"
         self._data = data
         self._base = base
         self._quote = quote
@@ -128,6 +181,7 @@ class ChartPanel(ctk.CTkFrame):
         self._render()
 
     def plot_multi(self, datasets: dict[str, dict[str, Any]], base: str) -> None:
+        self._mode = "multi"
         self._data = {"_multi": datasets}
         self._base = base
         self._quote = "multi"
@@ -139,82 +193,49 @@ class ChartPanel(ctk.CTkFrame):
         self, annual_changes: dict[int, float], base: str, quote: str
     ) -> None:
         """Year-by-year bar chart coloured green/red."""
-        self._ax.cla()
-        ax = self._ax
-        _style(ax)
-        years = list(annual_changes.keys())
-        values = list(annual_changes.values())
-        colors = [ACCENT_GREEN if v >= 0 else ACCENT_RED for v in values]
-        bars = ax.bar(
-            np.array(years, dtype=float),
-            np.array(values),
-            color=colors,
-            width=0.7,
-            edgecolor=BG_CARD,
-        )
-        ax.axhline(0, color=BORDER_COLOR, linewidth=0.8)
-        ax.set_title(f"{base}/{quote} — Annual % Change", fontsize=11)
-        ax.set_xlabel("Year", fontsize=9)
-        ax.set_ylabel("% Change", fontsize=9)
-        for bar, val in zip(bars, values):
-            ax.text(
-                bar.get_x() + bar.get_width() / 2,
-                bar.get_height() + (0.3 if val >= 0 else -0.8),
-                f"{val:+.1f}%",
-                ha="center",
-                va="bottom",
-                fontsize=7,
-                color=TEXT_MUTED,
-            )
-        self._mpl_canvas.draw_idle()
+        self._mode = "heatmap"
+        self._special = (dict(annual_changes), base, quote)
+        self._render()
 
     def plot_matrix_heatmap(self, matrix: dict[str, Any], codes: list[str]) -> None:
         """Cross-rate correlation-style heatmap."""
-        self._ax.cla()
-        ax = self._ax
-        n = len(codes)
-        data_arr = np.zeros((n, n))
-        for i, b in enumerate(codes):
-            for j, q in enumerate(codes):
-                v = matrix.get(b, {}).get(q)
-                data_arr[i, j] = v if v is not None else 0
-
-        im = ax.imshow(np.log1p(data_arr), cmap="YlOrBr", aspect="auto")
-        ax.set_xticks(range(n))
-        ax.set_yticks(range(n))
-        ax.set_xticklabels(codes, rotation=45, ha="right", fontsize=8, color=TEXT_MUTED)
-        ax.set_yticklabels(codes, fontsize=8, color=TEXT_MUTED)
-        for i in range(n):
-            for j in range(n):
-                v = matrix.get(codes[i], {}).get(codes[j])
-                if v is not None:
-                    ax.text(
-                        j,
-                        i,
-                        f"{v:.2f}",
-                        ha="center",
-                        va="center",
-                        fontsize=6,
-                        color=TEXT_PRIMARY,
-                    )
-        ax.set_facecolor(BG_DARK)
-        ax.figure.set_facecolor(BG_CARD)
-        ax.set_title(
-            "Cross-Rate Matrix (log scale colour)", fontsize=10, color=TEXT_PRIMARY
-        )
-        cb = self._fig.colorbar(im, ax=ax, fraction=0.03)
-        cb.ax.tick_params(colors=TEXT_MUTED, labelsize=7)
-        self._mpl_canvas.draw_idle()
+        self._mode = "matrix"
+        self._special = (matrix, list(codes))
+        self._render()
 
     # ── rendering ─────────────────────────────────────────────────────────────
 
+    def _reset_axes(self) -> None:
+        # A colorbar lives on its own axes; ax.cla() does not remove it, so
+        # without this every matrix rebuild stole more width from the plot.
+        if self._colorbar is not None:
+            try:
+                self._colorbar.remove()
+            except Exception:
+                pass
+            self._colorbar = None
+        self._ax.cla()
+        _style(self._ax)
+        self._hover_x = None
+        self._hover_series = []
+        self._hover_artists = ()
+
     def _render(self) -> None:
+        if self._mode == "heatmap" and self._special:
+            self._reset_axes()
+            self._draw_annual(*self._special)
+            self._mpl_canvas.draw_idle()
+            return
+        if self._mode == "matrix" and self._special:
+            self._reset_axes()
+            self._draw_matrix(*self._special)
+            self._mpl_canvas.draw_idle()
+            return
         if not self._data:
             self._draw_placeholder()
             return
         ctype = self._seg.get()
-        self._ax.cla()
-        _style(self._ax)
+        self._reset_axes()
 
         if isinstance(self._data, dict) and "_multi" in self._data:
             self._draw_multi(self._data["_multi"])
@@ -234,23 +255,31 @@ class ChartPanel(ctk.CTkFrame):
             self._draw_candle()
         elif ctype == "Scatter":
             self._draw_scatter()
+
+        if not self._ax.has_data() and not self._ax.texts:
+            self._draw_message("No data for this selection / date range")
         self._mpl_canvas.draw_idle()
 
-    def _series(self, quote: str | None = None) -> tuple[list[datetime], list[float]]:
+    def _series(
+        self, quote: str | None = None, data: dict[str, Any] | None = None
+    ) -> tuple[list[datetime], list[float]]:
         target = quote or self._quote
-        cache_key = f"{target}:{'pct' if self._pct_mode else 'abs'}"
+        src = self._data if data is None else data
+        cache_key = f"{id(src)}:{target}:{'pct' if self._pct_mode else 'abs'}"
         if cache_key in self._series_cache:
             return self._series_cache[cache_key]
-        rates = self._data.get("rates", {})
+        rates = src.get("rates", {})
         if not rates:
             return [], []
         items = sorted(
-            ((d, day[target]) for d, day in rates.items() if target in day),
+            (d, day[target]) for d, day in rates.items() if day.get(target) is not None
         )
         if not items:
             return [], []
         date_strs, vals_raw = zip(*items)
-        dates: list[datetime] = [pd.Timestamp(d).to_pydatetime() for d in date_strs]
+        # Vectorised parse — much faster than one pd.Timestamp per point on
+        # multi-decade daily series (~5 000+ points).
+        dates: list[datetime] = list(pd.to_datetime(list(date_strs)).to_pydatetime())
         vals = [float(v) for v in vals_raw]
 
         if self._pct_mode and vals and vals[0] != 0:
@@ -263,13 +292,22 @@ class ChartPanel(ctk.CTkFrame):
     def _ylabel(self) -> str:
         return "% Change from Start" if self._pct_mode else "Rate"
 
+    def _register_hover(self, dates, label: str, vals, color: str) -> None:
+        if not len(dates):
+            return
+        x = mdates.date2num(np.array(dates))
+        if self._hover_x is None or len(x) > len(self._hover_x):
+            self._hover_x = x
+        self._hover_series.append((label, (x, np.asarray(vals, dtype=float)), color))
+
     def _draw_line(self, all_q: bool = False) -> None:
         rates = self._data.get("rates", {})
         if not rates:
             return
-        all_quotes = list(next(iter(rates.values())).keys())
         dates: list[datetime] = []
         if all_q:
+            # Union of quotes across all days, not just the first one
+            all_quotes = sorted({q for day in rates.values() for q in day})
             for i, q in enumerate(all_quotes[: len(PALETTE)]):
                 dates, vals = self._series(q)
                 if dates:
@@ -280,7 +318,9 @@ class ChartPanel(ctk.CTkFrame):
                         label=q,
                         linewidth=1.6,
                     )
-            self._ax.legend(loc="upper left", fontsize=7, ncol=2)
+                    self._register_hover(dates, q, vals, PALETTE[i])
+            if self._ax.has_data():
+                self._ax.legend(loc="upper left", fontsize=7, ncol=2)
         else:
             dates, vals = self._series()
             if dates:
@@ -294,10 +334,27 @@ class ChartPanel(ctk.CTkFrame):
                     s=50,
                     zorder=5,
                 )
-        self._fmt_x(dates if not all_q else [])
+                self._annotate_last(dates[-1], vals[-1])
+                self._register_hover(dates, self._quote, vals, ACCENT_GOLD)
+        self._fmt_x(dates)
         suffix = " (% Change)" if self._pct_mode else ""
         self._ax.set_title(f"{self._base}/{self._quote}{suffix}", fontsize=11)
         self._ax.set_ylabel(self._ylabel(), fontsize=8)
+
+    def _annotate_last(self, x, y) -> None:
+        """Small pill with the latest value next to the final point."""
+        txt = f"{y:+.2f}%" if self._pct_mode else f"{y:.4f}"
+        self._ax.annotate(
+            txt,
+            xy=(x, y),
+            xytext=(6, 0),
+            textcoords="offset points",
+            va="center",
+            fontsize=8,
+            color=BG_DARK,
+            bbox=dict(boxstyle="round,pad=0.25", fc=ACCENT_GOLD, ec="none"),
+            annotation_clip=False,
+        )
 
     def _draw_area(self) -> None:
         dates, vals = self._series()
@@ -305,8 +362,14 @@ class ChartPanel(ctk.CTkFrame):
             return
         d_arr = np.array(dates)
         v_arr = np.array(vals)
-        self._ax.fill_between(d_arr, v_arr, alpha=0.25, color=ACCENT_GOLD)
+        # Fill down to the visible minimum rather than 0 so the shape is
+        # readable for rates far from zero (e.g. EUR/JPY ~160).
+        floor = (
+            float(v_arr.min()) if not self._pct_mode else min(0.0, float(v_arr.min()))
+        )
+        self._ax.fill_between(d_arr, v_arr, floor, alpha=0.25, color=ACCENT_GOLD)
         self._ax.plot(d_arr, v_arr, color=ACCENT_GOLD, linewidth=2)
+        self._register_hover(dates, self._quote, vals, ACCENT_GOLD)
         self._fmt_x(dates)
         suffix = " (% Change)" if self._pct_mode else " — Area"
         self._ax.set_title(f"{self._base}/{self._quote}{suffix}", fontsize=11)
@@ -321,6 +384,12 @@ class ChartPanel(ctk.CTkFrame):
             for i in range(1, len(vals))
         ]
         self._ax.bar(np.array(dates), np.array(vals), color=colors, width=0.8)
+        if not self._pct_mode:
+            # Zoom the y-axis onto the data instead of starting at 0
+            lo, hi = min(vals), max(vals)
+            pad = (hi - lo) * 0.1 or abs(hi) * 0.01 or 1
+            self._ax.set_ylim(lo - pad, hi + pad)
+        self._register_hover(dates, self._quote, vals, ACCENT_GOLD)
         self._fmt_x(dates)
         suffix = " (% Change)" if self._pct_mode else " — Bar"
         self._ax.set_title(f"{self._base}/{self._quote}{suffix}", fontsize=11)
@@ -340,10 +409,14 @@ class ChartPanel(ctk.CTkFrame):
         self._ax.legend(fontsize=8)
         suffix = " (% Change)" if self._pct_mode else " — Distribution"
         self._ax.set_title(f"{self._base}/{self._quote}{suffix}", fontsize=11)
+        self._ax.set_xlabel(self._ylabel(), fontsize=8)
+        self._ax.set_ylabel("Frequency", fontsize=8)
 
     def _draw_rolling(self) -> None:
         dates, vals = self._series()
         if len(vals) < 7:
+            if vals:
+                self._draw_message("Need at least 7 data points for rolling averages")
             return
         d_arr = np.array(dates)
         v_arr = np.array(vals)
@@ -354,19 +427,23 @@ class ChartPanel(ctk.CTkFrame):
             d_arr, v_arr, color=ACCENT_GOLD, alpha=0.3, linewidth=1, label="Daily"
         )
         self._ax.plot(
-            np.array(r7.index.tolist()),
-            np.array(r7.values),
+            d_arr,
+            r7.to_numpy(),
             color=ACCENT_BLUE,
             linewidth=1.8,
             label="7-day MA",
         )
-        self._ax.plot(
-            np.array(r30.index.tolist()),
-            np.array(r30.values),
-            color=ACCENT_GREEN,
-            linewidth=1.8,
-            label="30-day MA",
-        )
+        if len(vals) >= 30:
+            self._ax.plot(
+                d_arr,
+                r30.to_numpy(),
+                color=ACCENT_GREEN,
+                linewidth=1.8,
+                label="30-day MA",
+            )
+            self._register_hover(dates, "30-day MA", r30.to_numpy(), ACCENT_GREEN)
+        self._register_hover(dates, "Daily", vals, ACCENT_GOLD)
+        self._register_hover(dates, "7-day MA", r7.to_numpy(), ACCENT_BLUE)
         self._ax.legend(fontsize=8)
         self._fmt_x(dates)
         suffix = " (% Change)" if self._pct_mode else " — Rolling Averages"
@@ -374,33 +451,34 @@ class ChartPanel(ctk.CTkFrame):
         self._ax.set_ylabel(self._ylabel(), fontsize=8)
 
     def _draw_candle(self) -> None:
-        """Monthly OHLC candlestick using bar chart approximation."""
+        """Monthly OHLC candlestick — drawn with two vectorised calls
+        (vlines + bar) instead of two matplotlib calls per month."""
         dates, vals = self._series()
         if not dates:
             return
         s = pd.Series(vals, index=pd.DatetimeIndex(dates))
-        m = s.resample("ME").agg(["first", "max", "min", "last"])
+        m = s.resample(_MONTH_END).agg(["first", "max", "min", "last"]).dropna()
+        if m.empty:
+            return
         m.columns = ["open", "high", "low", "close"]
-        for idx, row in m.iterrows():
-            color = ACCENT_GREEN if row["close"] >= row["open"] else ACCENT_RED
-            x: float = mdates.date2num(idx.to_pydatetime())  # type: ignore[union-attr]
-            self._ax.plot(
-                np.array([x, x]),
-                np.array([float(row["low"]), float(row["high"])]),
-                color=TEXT_MUTED,
-                linewidth=0.8,
-            )
-            self._ax.bar(
-                x,
-                float(row["close"]) - float(row["open"]),
-                bottom=float(row["open"]),
-                color=color,
-                width=15,
-                alpha=0.8,
-            )
+        x = mdates.date2num(m.index.to_pydatetime())
+        o, h, l, c = (
+            m[k].to_numpy(dtype=float) for k in ("open", "high", "low", "close")
+        )
+        up = c >= o
+        colors = np.where(up, ACCENT_GREEN, ACCENT_RED)
+        self._ax.vlines(x, l, h, color=TEXT_MUTED, linewidth=0.8)
+        # Doji months (open == close) still get a hairline body
+        body = np.where(np.abs(c - o) > 0, c - o, np.maximum((h - l) * 0.01, 1e-9))
+        self._ax.bar(x, body, bottom=o, color=colors, width=15, alpha=0.85)
+        self._ax.xaxis_date()
         self._ax.xaxis.set_major_formatter(mdates.DateFormatter("%b %Y"))
         self._fig.autofmt_xdate(rotation=30, ha="right")
-        self._ax.set_title(f"{self._base}/{self._quote} — Monthly OHLC", fontsize=11)
+        suffix = " (% Change)" if self._pct_mode else ""
+        self._ax.set_title(
+            f"{self._base}/{self._quote} — Monthly OHLC{suffix}", fontsize=11
+        )
+        self._ax.set_ylabel(self._ylabel(), fontsize=8)
 
     def _draw_scatter(self) -> None:
         dates, vals = self._series()
@@ -412,27 +490,126 @@ class ChartPanel(ctk.CTkFrame):
         )
         suffix = " (% Change)" if self._pct_mode else " — Rate Scatter"
         self._ax.set_title(f"{self._base}/{self._quote}{suffix}", fontsize=11)
+        self._ax.set_xlabel("Observation #", fontsize=8)
+        self._ax.set_ylabel(self._ylabel(), fontsize=8)
 
     def _draw_multi(self, datasets: dict[str, dict[str, Any]]) -> None:
+        all_dates: list[datetime] = []
         for i, (quote, data) in enumerate(datasets.items()):
-            prev_data, prev_quote = self._data, self._quote
-            self._data = data
-            self._quote = quote
-            self._series_cache.clear()
-            dates, vals = self._series(quote)
-            self._data, self._quote = prev_data, prev_quote
+            dates, vals = self._series(quote, data)
             if dates:
+                color = PALETTE[i % len(PALETTE)]
                 self._ax.plot(
                     np.array(dates),
                     np.array(vals),
-                    color=PALETTE[i % len(PALETTE)],
+                    color=color,
                     label=quote,
                     linewidth=1.8,
                 )
-        self._series_cache.clear()
-        self._ax.legend(loc="upper left", fontsize=8, ncol=2)
+                self._register_hover(dates, quote, vals, color)
+                if len(dates) > len(all_dates):
+                    all_dates = dates
+        if self._ax.has_data():
+            self._ax.legend(loc="upper left", fontsize=8, ncol=2)
+        if self._pct_mode:
+            self._ax.axhline(0, color=TEXT_DIM, linewidth=0.8)
+        self._fmt_x(all_dates)
         suffix = " (% Change)" if self._pct_mode else " — Multi-Currency Overlay"
         self._ax.set_title(f"{self._base}{suffix}", fontsize=11)
+        self._ax.set_ylabel(self._ylabel(), fontsize=8)
+
+    def _draw_annual(
+        self, annual_changes: dict[int, float], base: str, quote: str
+    ) -> None:
+        ax = self._ax
+        if not annual_changes:
+            self._draw_message("No annual data for this range")
+            return
+        years = list(annual_changes.keys())
+        values = list(annual_changes.values())
+        colors = [ACCENT_GREEN if v >= 0 else ACCENT_RED for v in values]
+        bars = ax.bar(
+            np.array(years, dtype=float),
+            np.array(values),
+            color=colors,
+            width=0.7,
+            edgecolor=BG_CARD,
+        )
+        ax.axhline(0, color=BORDER_COLOR, linewidth=0.8)
+        ax.set_title(f"{base}/{quote} — Annual % Change", fontsize=11)
+        ax.set_xlabel("Year", fontsize=9)
+        ax.set_ylabel("% Change", fontsize=9)
+        ax.xaxis.set_major_locator(mticker.MaxNLocator(integer=True))
+        # Labels are offset in screen points so they sit just outside the bar
+        # regardless of the y-scale (fixed data offsets overlapped on small
+        # ranges and floated far away on large ones).
+        if len(values) <= 40:
+            for bar, val in zip(bars, values):
+                ax.annotate(
+                    f"{val:+.1f}%",
+                    xy=(bar.get_x() + bar.get_width() / 2, val),
+                    xytext=(0, 3 if val >= 0 else -3),
+                    textcoords="offset points",
+                    ha="center",
+                    va="bottom" if val >= 0 else "top",
+                    fontsize=7,
+                    color=TEXT_MUTED,
+                )
+        ax.margins(y=0.12)
+
+    def _draw_matrix(self, matrix: dict[str, Any], codes: list[str]) -> None:
+        ax = self._ax
+        n = len(codes)
+        data_arr = np.full((n, n), np.nan)
+        for i, b in enumerate(codes):
+            for j, q in enumerate(codes):
+                v = matrix.get(b, {}).get(q)
+                if v is not None:
+                    data_arr[i, j] = v
+
+        # log10 spreads both 0.006 (JPY→EUR) and 160 (EUR→JPY) evenly, and
+        # NaN cells (missing rates) render as background rather than as "0".
+        with np.errstate(divide="ignore", invalid="ignore"):
+            logv = np.log10(data_arr)
+        masked = np.ma.masked_invalid(logv)
+        cmap = matplotlib.colormaps["YlOrBr"].copy()
+        cmap.set_bad(BG_DARK)
+        im = ax.imshow(masked, cmap=cmap, aspect="auto")
+        ax.grid(False)
+        ax.set_xticks(range(n))
+        ax.set_yticks(range(n))
+        ax.set_xticklabels(codes, rotation=45, ha="right", fontsize=8, color=TEXT_MUTED)
+        ax.set_yticklabels(codes, fontsize=8, color=TEXT_MUTED)
+        ax.set_xlabel("Quote (column)", fontsize=8)
+        ax.set_ylabel("Base (row)", fontsize=8)
+
+        finite = logv[np.isfinite(logv)]
+        lo, hi = (float(finite.min()), float(finite.max())) if finite.size else (0, 1)
+        span = (hi - lo) or 1.0
+        for i in range(n):
+            for j in range(n):
+                v = data_arr[i, j]
+                if np.isnan(v):
+                    ax.text(
+                        j, i, "—", ha="center", va="center", fontsize=7, color=TEXT_DIM
+                    )
+                    continue
+                # Dark text on light (yellow) cells, light text on dark cells
+                t = (logv[i, j] - lo) / span
+                ax.text(
+                    j,
+                    i,
+                    f"{v:.4g}",
+                    ha="center",
+                    va="center",
+                    fontsize=6 if n > 8 else 7,
+                    color=BG_DARK if t < 0.6 else TEXT_PRIMARY,
+                )
+        ax.set_title("Cross-Rate Matrix (log scale colour)", fontsize=10)
+        self._colorbar = self._fig.colorbar(im, ax=ax, fraction=0.03)
+        self._colorbar.ax.tick_params(colors=TEXT_MUTED, labelsize=7)
+        self._colorbar.set_label("log₁₀(rate)", color=TEXT_MUTED, fontsize=7)
+        self._colorbar.outline.set_edgecolor(BORDER_COLOR)
 
     def _fmt_x(self, dates: list[datetime]) -> None:
         if not dates:
@@ -446,29 +623,121 @@ class ChartPanel(ctk.CTkFrame):
             self._ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y"))
         self._fig.autofmt_xdate(rotation=30, ha="right")
 
-    def _draw_placeholder(self) -> None:
-        self._ax.cla()
-        _style(self._ax)
+    def _draw_message(self, text: str) -> None:
         self._ax.text(
             0.5,
             0.5,
-            "Select currencies & range, then fetch data →",
+            text,
             ha="center",
             va="center",
-            fontsize=12,
+            fontsize=11,
             color=TEXT_DIM,
             transform=self._ax.transAxes,
         )
+
+    def _draw_placeholder(self) -> None:
+        self._reset_axes()
+        self._draw_message("Select currencies & range, then fetch data →")
         self._ax.axis("off")
         self._mpl_canvas.draw_idle()
+
+    # ── hover read-out ────────────────────────────────────────────────────────
+
+    def _ensure_hover_artists(self):
+        if not self._hover_artists:
+            vline = self._ax.axvline(
+                self._hover_x[0],
+                color=TEXT_MUTED,
+                linewidth=0.8,
+                linestyle=":",
+                visible=False,
+            )
+            dots = self._ax.scatter([], [], s=28, zorder=6, edgecolors=BG_DARK)
+            dots.set_visible(False)
+            tip = self._ax.annotate(
+                "",
+                xy=(0, 0),
+                xycoords="axes fraction",
+                xytext=(8, -8),
+                textcoords="offset points",
+                ha="left",
+                va="top",
+                fontsize=8,
+                family="monospace",
+                color=TEXT_PRIMARY,
+                bbox=dict(
+                    boxstyle="round,pad=0.4", fc=BG_CARD, ec=BORDER_COLOR, alpha=0.95
+                ),
+                visible=False,
+                zorder=10,
+            )
+            self._hover_artists = (vline, dots, tip)
+        return self._hover_artists
+
+    def _on_hover(self, event) -> None:
+        if (
+            event.inaxes is not self._ax
+            or event.xdata is None
+            or self._hover_x is None
+            or not self._hover_series
+            or self._mode not in ("series", "multi")
+            or (self._mode == "series" and self._seg.get() not in self._HOVERABLE)
+        ):
+            return
+        vline, dots, tip = self._ensure_hover_artists()
+        xs = self._hover_x
+        idx = int(np.clip(np.searchsorted(xs, event.xdata), 0, len(xs) - 1))
+        if idx > 0 and abs(xs[idx - 1] - event.xdata) < abs(xs[idx] - event.xdata):
+            idx -= 1
+        x = xs[idx]
+        lines = [mdates.num2date(x).strftime("%Y-%m-%d")]
+        pts, cols = [], []
+        for label, (sx, sy), color in self._hover_series:
+            j = int(np.clip(np.searchsorted(sx, x), 0, len(sx) - 1))
+            y = sy[j]
+            if not np.isfinite(y):
+                continue
+            val = f"{y:+.3f}%" if self._pct_mode else f"{y:.5g}"
+            lines.append(f"{label:<9}{val:>10}")
+            pts.append((sx[j], y))
+            cols.append(color)
+        vline.set_xdata([x, x])
+        vline.set_visible(True)
+        if pts:
+            dots.set_offsets(np.array(pts))
+            dots.set_facecolor(cols)
+            dots.set_visible(True)
+        tip.set_text("\n".join(lines))
+        # Keep the tooltip inside the axes: flip to the left on the right half
+        ax_x = self._ax.transAxes.inverted().transform((event.x, event.y))
+        right_half = ax_x[0] > 0.6
+        tip.xy = (ax_x[0], 0.98)
+        tip.set_position((-8, -4) if right_half else (8, -4))
+        tip.set_ha("right" if right_half else "left")
+        tip.set_visible(True)
+        self._mpl_canvas.draw_idle()
+
+    def _on_leave(self, _event) -> None:
+        if self._hover_artists:
+            for a in self._hover_artists:
+                a.set_visible(False)
+            self._mpl_canvas.draw_idle()
 
     def _save(self) -> None:
         from tkinter import filedialog
 
+        name = (
+            f"{self._base}_{self._quote}_chart"
+            if self._mode != "matrix"
+            else "cross_rate_matrix"
+        )
         p = filedialog.asksaveasfilename(
             defaultextension=".png",
-            filetypes=[("PNG", "*.png"), ("SVG", "*.svg")],
+            filetypes=[("PNG", "*.png"), ("SVG", "*.svg"), ("PDF", "*.pdf")],
+            initialfile=f"{name}.png",
             title="Save chart",
         )
         if p:
+            # Hide the hover read-out so it doesn't end up in the export
+            self._on_leave(None)
             self._fig.savefig(p, dpi=150, bbox_inches="tight", facecolor=BG_CARD)

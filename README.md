@@ -51,12 +51,36 @@ Line · Area · Bar (directional green/red) · Multi-Currency Overlay · Histogr
 | **% Change toggle** | Time Series sidebar checkbox switches the chart to percent-change-from-first-value mode |
 | **Date range presets** | Compare and Statistics tabs have 1M / 3M / 6M / YTD / 1Y quick buttons that set dates and auto-fetch |
 
+### New in 1.1
+
+| Feature / fix | Where |
+|---------------|-------|
+| **📅 Date pickers** | Every date field now has a calendar button (uses `tkcalendar`, which was already a dependency but unused) |
+| **Currency drop-downs** | Base / quote fields in Historical, Time Series, Compare, Statistics and Heatmap are combo boxes (typing still works, e.g. archived codes like `DEM`) |
+| **Input validation** | Bad dates, reversed ranges, future dates and same-currency pairs are caught before any request; offending fields turn red |
+| **Chart hover read-out** | Move the mouse over Line / Area / Bar / Rolling Avg / Compare charts to see the date and value(s) under the cursor |
+| **Latest-value label** | Line charts tag the final point with its value |
+| **Sortable rate tables** | Click *Currency*, *Code*, *Rate* or *Change* headers to sort; double-click a row to copy the rate |
+| **Compare normalisation** | "% change from start" toggle (on by default) so JPY, GBP and INR can share one axis; CSV/JSON export; selection counter and *Clear* button |
+| **Statistics** | Four extra cards: annualised volatility, high–low range %, best day and worst day |
+| **Heatmap** | Close-to-close annual change (Dec → Dec; current year = YTD) and summary cards (best / worst / average / up-years) |
+| **Watchlist** | Click a pair to chart it, ✕ to remove a single pair, Enter adds the typed pair, failed pairs are flagged |
+| **Converter** | Result updates live while you type the amount or flip direction (no extra request); accepts `1,000.50`; swap and currency changes re-convert |
+| **Historical** | ◀ Prev day / Next day ▶ buttons (weekends skipped); 12-year quick-jump grid |
+| **Providers** | Filter box, sorted list and a "currencies covered" card |
+| **Session restore** | Window size/position, last open tab, and most tab inputs are remembered |
+| **Shortcuts** | `F5` refresh, `Ctrl+0` for tab 10, `Ctrl+Tab` / `Ctrl+Shift+Tab` to cycle tabs |
+
+**Performance:** the Dashboard / Historical tables now use lightweight Tk labels allocated on demand instead of 1 320 pre-built CTkLabels (≈ 2 s faster to build each); Compare fetches all currencies in **one** request instead of one per currency; candlesticks and date parsing are vectorised; the HTTP cache is LRU-bounded; transient network errors and HTTP 429/5xx are retried with back-off; results are delivered to the UI through a thread-safe queue instead of calling Tk from worker threads.
+
+**Bug fixes:** ★ clicks could toggle a pin several times (bindings stacked up on every re-render); the Change column was wiped whenever you filtered or pinned; the Matrix colour bar was duplicated on every rebuild, shrinking the chart; switching chart type on the Heatmap/Matrix tabs erased the chart; quick-range and year buttons overflowed the sidebar and were unclickable; a cleared watchlist came back after restart; Compare's filter scrambled the list order; a slow old response could overwrite a newer one; `Refresh` served cached data; Currency Detail charted EUR against itself; Enter did nothing on the Converter tab; a tab that failed to build stayed blank silently; settings writes were not atomic.
+
 ### Export
 - **CSV and JSON** on every data tab (Dashboard, Historical, Time Series, Heatmap, Matrix)
-- **PNG or SVG** chart export from the matplotlib toolbar on any chart panel
+- **PNG, SVG or PDF** chart export via the 💾 Save button on any chart panel
 
 ### Performance
-- **Thread-safe in-memory TTL cache** — live rates cached 5 min, historical data cached 24 h
+- **Thread-safe in-memory TTL + LRU cache** — live rates cached 5 min, historical data cached 24 h
 - **Parallel fetching** via `ThreadPoolExecutor` for the Matrix and Watchlist tabs
 - **Lazy tab construction** — only the active tab is built on startup; all others are built on first click
 
@@ -121,14 +145,14 @@ Frankfurter/
 │   ├── __init__.py
 │   ├── app.py                  <- App (root CTk window, keyboard shortcuts, lazy tab orchestration)
 │   ├── theme.py                <- Colour palette, fonts, matplotlib style
-│   ├── widgets.py              <- StatCard, RateTable (★ pins), WatchlistPanel, SkeletonFrame, ...
-│   ├── chart_panel.py          <- ChartPanel (8 chart types, % change mode, PNG export)
+│   ├── widgets.py              <- StatCard, RateTable (★ pins, sorting), WatchlistPanel, DateEntry, SkeletonFrame, ...
+│   ├── chart_panel.py          <- ChartPanel (8 chart types, % change mode, hover read-out, export)
 │   └── tabs.py                 <- All 11 tab implementations
 │
 ├── utils/
 │   ├── __init__.py
 │   ├── settings.py             <- Settings (persistent JSON — favourites, currencies, date ranges)
-│   └── workers.py              <- AsyncWorker (daemon-thread background calls)
+│   └── workers.py              <- AsyncWorker (thread pool + main-thread result queue)
 │
 └── exports/
     ├── __init__.py
@@ -141,8 +165,9 @@ Frankfurter/
 
 | Shortcut | Action |
 |----------|--------|
-| `Ctrl+1` … `Ctrl+9` | Switch to tab 1 – 9 |
-| `Enter` | Trigger fetch on the currently active tab |
+| `Ctrl+1` … `Ctrl+9`, `Ctrl+0` | Switch to tab 1 – 10 |
+| `Ctrl+Tab` / `Ctrl+Shift+Tab` | Next / previous tab |
+| `Enter` or `F5` | Trigger fetch on the currently active tab (Watchlist: add the typed pair) |
 
 ---
 

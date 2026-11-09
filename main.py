@@ -6,8 +6,8 @@ Run:
     python main.py
 """
 
-import sys
 import os
+import sys
 
 # Ensure project root is on the path so relative imports work regardless of
 # where the script is launched from.

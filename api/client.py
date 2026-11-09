@@ -10,16 +10,27 @@ response into the same shape the UI expects:
   - get_currencies                        → {iso_code: name, ...}
 """
 
-import httpx
-import threading
+import math
 import statistics
+import threading
 import time
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date
-from typing import Optional
+
+import httpx
 
 BASE_URL = "https://api.frankfurter.dev/v2"
 TIMEOUT = 15
+# Transient failures (connection drops, timeouts, 429/5xx) are retried this many
+# extra times with a short exponential back-off before surfacing to the UI.
+MAX_RETRIES = 2
+RETRY_BACKOFF = 0.4
+_RETRY_STATUS = {429, 500, 502, 503, 504}
+# Upper bound on cached responses so long sessions don't grow memory forever.
+CACHE_MAX_ENTRIES = 256
+# Trading days per year, used to annualise daily volatility.
+TRADING_DAYS = 252
 
 
 class FrankfurterAPIError(Exception):
@@ -30,9 +41,12 @@ class FrankfurterAPIError(Exception):
 
 
 class _Cache:
-    def __init__(self):
-        self._store: dict = {}
+    """Thread-safe TTL cache with LRU eviction once *max_entries* is reached."""
+
+    def __init__(self, max_entries: int = CACHE_MAX_ENTRIES):
+        self._store: OrderedDict = OrderedDict()
         self._lock = threading.Lock()
+        self._max = max_entries
 
     def get(self, key):
         with self._lock:
@@ -40,6 +54,7 @@ class _Cache:
             if e is None:
                 return None
             if time.monotonic() < e[1]:
+                self._store.move_to_end(key)
                 return e[0]
             # Evict expired entry immediately rather than letting it accumulate
             del self._store[key]
@@ -48,10 +63,19 @@ class _Cache:
     def set(self, key, value, ttl: int):
         with self._lock:
             self._store[key] = (value, time.monotonic() + ttl)
+            self._store.move_to_end(key)
+            while len(self._store) > self._max:
+                self._store.popitem(last=False)
 
     def clear(self):
         with self._lock:
             self._store.clear()
+
+    def invalidate(self, prefix: str) -> None:
+        """Drop every entry whose key starts with *prefix*."""
+        with self._lock:
+            for k in [k for k in self._store if str(k).startswith(prefix)]:
+                del self._store[k]
 
 
 _cache = _Cache()
@@ -90,7 +114,18 @@ def _flat_to_series_dict(flat: list) -> dict:
         rate = entry.get("rate")
         if d and quote and rate is not None:
             by_date.setdefault(d, {})[quote] = rate
-    return {"rates": by_date}
+    # ISO dates sort lexicographically; guarantee chronological order so every
+    # consumer (charts, stats, exports) can rely on it.
+    return {"rates": dict(sorted(by_date.items()))}
+
+
+def _sorted_values(rates_map: dict, quote: str) -> list[float]:
+    """Chronologically ordered values of *quote* from a series rates map."""
+    return [
+        float(day[quote])
+        for _, day in sorted(rates_map.items())
+        if day.get(quote) is not None
+    ]
 
 
 # ── client ────────────────────────────────────────────────────────────────────
@@ -104,10 +139,32 @@ class FrankfurterClient:
         # with connection pooling is faster than per-thread sessions.
         self._http = httpx.Client(
             base_url=BASE_URL,
-            headers={"Accept": "application/json"},
+            headers={
+                "Accept": "application/json",
+                "User-Agent": "Frankfurter-GUI/1.1 (+https://github.com/Yeongwonhan-Jeolmang/Frankfurter)",
+            },
             timeout=TIMEOUT,
             http2=False,  # frankfurter.dev doesn't support h2; skip negotiation
         )
+
+    def close(self) -> None:
+        """Release pooled connections (call on application exit)."""
+        try:
+            self._http.close()
+        except Exception:
+            pass
+
+    @staticmethod
+    def clear_cache() -> None:
+        """Drop every cached response."""
+        _cache.clear()
+
+    @staticmethod
+    def invalidate_latest() -> None:
+        """Forget cached *latest* rates so a manual refresh really hits the
+        network (historical data is immutable and stays cached)."""
+        _cache.invalidate("latest:")
+        _cache.invalidate("rate:")  # single-pair latest keys end in ':None'
 
     # ── Currencies ────────────────────────────────────────────────────────────
 
@@ -146,11 +203,12 @@ class FrankfurterClient:
 
     def get_currency_detail(self, code: str) -> dict:
         """Full metadata for a single currency (name, providers, date range…)."""
+        code = code.upper()
         key = f"ccy:{code}"
         cached = _cache.get(key)
-        if cached:
+        if cached is not None:
             return cached
-        data = self._get(f"/currency/{code.upper()}")
+        data = self._get(f"/currency/{code}")
         # v2 returns a plain object — normalise field names for the UI
         if isinstance(data, dict):
             # Ensure "name" key exists
@@ -164,16 +222,18 @@ class FrankfurterClient:
 
     # ── Latest rates ──────────────────────────────────────────────────────────
 
-    def get_latest_rates(self, base="EUR", quotes: Optional[list] = None) -> dict:
+    def get_latest_rates(self, base="EUR", quotes: list | None = None) -> dict:
         """
         Returns {"date": ..., "base": ..., "rates": {quote: rate, ...}}
         """
+        base = base.upper()
+        quotes = [q.upper() for q in quotes] if quotes else None
         params = {"base": base}
         if quotes:
             params["quotes"] = ",".join(quotes)
         key = f"latest:{base}:{','.join(sorted(quotes or []))}"
         cached = _cache.get(key)
-        if cached:
+        if cached is not None:
             return cached
         raw = self._get("/rates", params)
         data = _flat_to_rates_dict(raw) if isinstance(raw, list) else raw
@@ -183,17 +243,19 @@ class FrankfurterClient:
     # ── Historical single date ────────────────────────────────────────────────
 
     def get_rates_on_date(
-        self, on_date: str, base="EUR", quotes: Optional[list] = None
+        self, on_date: str, base="EUR", quotes: list | None = None
     ) -> dict:
         """
         Returns {"date": ..., "base": ..., "rates": {quote: rate, ...}}
         """
+        base = base.upper()
+        quotes = [q.upper() for q in quotes] if quotes else None
         params = {"base": base, "date": on_date}
         if quotes:
             params["quotes"] = ",".join(quotes)
         key = f"hist:{on_date}:{base}:{','.join(sorted(quotes or []))}"
         cached = _cache.get(key)
-        if cached:
+        if cached is not None:
             return cached
         raw = self._get("/rates", params)
         data = _flat_to_rates_dict(raw) if isinstance(raw, list) else raw
@@ -205,14 +267,16 @@ class FrankfurterClient:
     def get_time_series(
         self,
         start: str,
-        end: Optional[str] = None,
+        end: str | None = None,
         base="EUR",
-        quotes: Optional[list] = None,
-        group: Optional[str] = None,
+        quotes: list | None = None,
+        group: str | None = None,
     ) -> dict:
         """
         Returns {"rates": {"YYYY-MM-DD": {quote: rate, ...}, ...}}
         """
+        base = base.upper()
+        quotes = [q.upper() for q in quotes] if quotes else None
         params = {"base": base, "from": start}
         if end:
             params["to"] = end
@@ -222,7 +286,7 @@ class FrankfurterClient:
             params["group"] = group
         key = f"ts:{start}:{end}:{base}:{','.join(sorted(quotes or []))}:{group}"
         cached = _cache.get(key)
-        if cached:
+        if cached is not None:
             return cached
         raw = self._get("/rates", params)
         data = _flat_to_series_dict(raw) if isinstance(raw, list) else raw
@@ -233,20 +297,29 @@ class FrankfurterClient:
     # ── Single pair ───────────────────────────────────────────────────────────
 
     def get_single_rate(
-        self, base: str, quote: str, on_date: Optional[str] = None
+        self, base: str, quote: str, on_date: str | None = None
     ) -> dict:
         """
         Returns {"date": ..., "base": ..., "quote": ..., "rate": float}
         v2 /rate/{base}/{quote} already returns this shape — no normalisation needed.
         """
+        base, quote = base.upper(), quote.upper()
         params = {}
         if on_date:
             params["date"] = on_date
         key = f"rate:{base}:{quote}:{on_date}"
         cached = _cache.get(key)
-        if cached:
+        if cached is not None:
             return cached
-        data = self._get(f"/rate/{base.upper()}/{quote.upper()}", params)
+        if base == quote:
+            # Identity pair — no need to hit the network (and the API rejects it)
+            return {
+                "date": on_date or date.today().isoformat(),
+                "base": base,
+                "quote": quote,
+                "rate": 1.0,
+            }
+        data = self._get(f"/rate/{base}/{quote}", params)
         ttl = 86400 if on_date else 300
         _cache.set(key, data, ttl)
         return data
@@ -281,11 +354,13 @@ class FrankfurterClient:
                 row: dict[str, float | None] = {
                     k: float(v) for k, v in data.get("rates", {}).items()
                 }
-                row[base] = 1.0
-                return base, row
-            except FrankfurterAPIError:
-                fallback: dict[str, float | None] = {q: None for q in codes}
-                return base, fallback
+            except (FrankfurterAPIError, ValueError, TypeError):
+                row = {q: None for q in codes}
+            row[base] = 1.0
+            return base, row
+
+        if not codes:
+            return matrix
 
         with ThreadPoolExecutor(max_workers=min(len(codes), 8)) as pool:
             futures = {pool.submit(fetch_row, base): base for base in codes}
@@ -298,10 +373,10 @@ class FrankfurterClient:
     # ── Statistics ────────────────────────────────────────────────────────────
 
     def get_volatility_stats(
-        self, base: str, quote: str, start: str, end: Optional[str] = None
+        self, base: str, quote: str, start: str, end: str | None = None
     ) -> dict:
         data = self.get_time_series(start, end, base, [quote])
-        values = [v[quote] for v in data.get("rates", {}).values() if quote in v]
+        values = _sorted_values(data.get("rates", {}), quote)
         if not values:
             return {}
         pct_changes = [
@@ -309,6 +384,8 @@ class FrankfurterClient:
             for i in range(1, len(values))
             if values[i - 1] != 0
         ]
+        daily_sd = statistics.stdev(pct_changes) if len(pct_changes) > 1 else 0.0
+        lo, hi = min(values), max(values)
         return {
             "min": min(values),
             "max": max(values),
@@ -322,6 +399,11 @@ class FrankfurterClient:
             "max_drawdown": self._max_drawdown(values),
             "first": values[0],
             "last": values[-1],
+            # Annualised volatility of daily % moves (sqrt-of-time scaling)
+            "volatility_ann": daily_sd * math.sqrt(TRADING_DAYS),
+            "range_pct": ((hi - lo) / lo * 100) if lo else 0,
+            "best_day": max(pct_changes) if pct_changes else 0,
+            "worst_day": min(pct_changes) if pct_changes else 0,
         }
 
     @staticmethod
@@ -329,13 +411,11 @@ class FrankfurterClient:
         peak = values[0]
         max_dd = 0.0
         for v in values:
-            if v > peak:
-                peak = v
+            peak = max(peak, v)
             if peak == 0:
                 continue
             dd = (peak - v) / peak * 100
-            if dd > max_dd:
-                max_dd = dd
+            max_dd = max(max_dd, dd)
         return max_dd
 
     # ── Year heatmap data ─────────────────────────────────────────────────────
@@ -344,23 +424,38 @@ class FrankfurterClient:
         self, base: str, quote: str, start_year: int, end_year: int
     ) -> dict[int, float]:
         """
-        Return {year: annual_pct_change} for each full year in range.
-        Uses monthly grouping to keep response small.
+        Return {year: annual_pct_change} for each year in range.
+
+        A year's change is measured close-to-close: from the last observation
+        of the previous year to the last observation of that year (the
+        current year is therefore year-to-date). The first year falls back to
+        first-to-last within the year when no prior data exists.
+        Uses monthly grouping to keep the response small.
         """
-        start = f"{start_year}-01-01"
-        end = f"{end_year}-12-31"
+        if start_year > end_year:
+            start_year, end_year = end_year, start_year
+        today = date.today()
+        end_year = min(end_year, today.year)
+        # Include December of the previous year as the opening reference
+        start = f"{start_year - 1}-12-01"
+        end = min(f"{end_year}-12-31", today.isoformat())
         data = self.get_time_series(start, end, base, [quote], group="month")
         rates_map = data.get("rates", {})
         by_year: dict[int, list[float]] = {}
-        for d, day_data in rates_map.items():
-            if quote not in day_data:
+        for d, day_data in sorted(rates_map.items()):
+            v = day_data.get(quote)
+            if v is None:
                 continue
-            year = int(d[:4])
-            by_year.setdefault(year, []).append(day_data[quote])
-        result = {}
-        for year, vals in sorted(by_year.items()):
-            if len(vals) >= 2:
-                result[year] = (vals[-1] - vals[0]) / vals[0] * 100
+            by_year.setdefault(int(d[:4]), []).append(float(v))
+        result: dict[int, float] = {}
+        for year in range(start_year, end_year + 1):
+            vals = by_year.get(year)
+            if not vals:
+                continue
+            prev = by_year.get(year - 1)
+            opening = prev[-1] if prev else vals[0]
+            if opening and (prev or len(vals) >= 2):
+                result[year] = (vals[-1] - opening) / opening * 100
         return result
 
     # ── Watchlist helpers ─────────────────────────────────────────────────────
@@ -381,7 +476,13 @@ class FrankfurterClient:
                     "date": d.get("date"),
                 }
             except FrankfurterAPIError as e:
-                return {"base": base, "quote": quote, "rate": None, "error": str(e)}
+                return {
+                    "base": base,
+                    "quote": quote,
+                    "rate": None,
+                    "date": None,
+                    "error": str(e),
+                }
 
         if not pairs:
             return []
@@ -398,17 +499,45 @@ class FrankfurterClient:
 
     # ── internal ──────────────────────────────────────────────────────────────
 
-    def _get(self, path: str, params: Optional[dict] = None) -> dict:
-        try:
-            r = self._http.get(path, params=params)
+    def _get(self, path: str, params: dict | None = None):
+        """GET *path* and return decoded JSON, retrying transient failures."""
+        last_err: FrankfurterAPIError | None = None
+        for attempt in range(MAX_RETRIES + 1):
+            if attempt:
+                time.sleep(RETRY_BACKOFF * (2 ** (attempt - 1)))
+            try:
+                r = self._http.get(path, params=params)
+            except httpx.TimeoutException:
+                last_err = FrankfurterAPIError("Request timed out.")
+                continue
+            except (httpx.ConnectError, httpx.NetworkError) as e:
+                last_err = FrankfurterAPIError(f"Connection error: {e}")
+                continue
+            except httpx.HTTPError as e:
+                raise FrankfurterAPIError(f"HTTP error: {e}") from e
+
+            if r.status_code in _RETRY_STATUS:
+                last_err = FrankfurterAPIError(
+                    f"HTTP {r.status_code}: {self._error_message(r)}"
+                )
+                continue
             if not r.is_success:
-                try:
-                    msg = r.json().get("message", r.text)
-                except Exception:
-                    msg = r.text
-                raise FrankfurterAPIError(f"HTTP {r.status_code}: {msg}")
-            return r.json()
-        except httpx.ConnectError as e:
-            raise FrankfurterAPIError(f"Connection error: {e}") from e
-        except httpx.TimeoutException:
-            raise FrankfurterAPIError("Request timed out.") from None
+                raise FrankfurterAPIError(
+                    f"HTTP {r.status_code}: {self._error_message(r)}"
+                )
+            try:
+                return r.json()
+            except ValueError as e:
+                raise FrankfurterAPIError("Malformed JSON in API response.") from e
+        assert last_err is not None
+        raise last_err
+
+    @staticmethod
+    def _error_message(r: httpx.Response) -> str:
+        try:
+            body = r.json()
+            if isinstance(body, dict):
+                return str(body.get("message", r.text))
+        except Exception:
+            pass
+        return r.text[:200]
