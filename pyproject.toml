@@ -18,3 +18,4 @@ frankfurter = "main:main"
  
 [tool.pyrefly]
 python-interpreter-path = ".venv/bin/python"
+project-excludes = [".venv/**", "**/__pycache__/**", "build/**", "dist/**"]

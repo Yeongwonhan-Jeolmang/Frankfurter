@@ -5,9 +5,7 @@ Reusable custom widgets brought to you by Florian van den Bersselaar
 from __future__ import annotations
 
 import tkinter as tk
-
 import customtkinter as ctk
-
 from ui.theme import *
 
 
@@ -714,7 +712,10 @@ class SkeletonFrame(ctk.CTkFrame):
         widths = [0.85, 0.65, 0.78, 0.55, 0.82, 0.60, 0.72]
         for j in range(rows):
             outer = ctk.CTkFrame(self, fg_color="transparent")
-            outer.pack(fill="x", padx=PAD_LG * 3, pady=4)
+            # Ragged right edge so the placeholder reads as rows of text
+            # (the widths list was defined but never applied before)
+            short_by = int((1 - widths[j % len(widths)]) * 400)
+            outer.pack(fill="x", padx=(PAD_LG * 3, PAD_LG * 3 + short_by), pady=4)
             bar = ctk.CTkFrame(outer, fg_color=BG_INPUT, height=16, corner_radius=4)
             bar.pack(fill="x")
             self._bars.append(bar)
@@ -774,6 +775,8 @@ def open_date_picker(entry, on_pick=None) -> None:
         current = _date.fromisoformat(entry.get().strip())
     except ValueError:
         current = _date.today()
+    # Keep the initial selection inside the calendar's allowed range
+    current = min(max(current, _date(1948, 1, 1)), _date.today())
 
     top = ctk.CTkToplevel(entry)
     top.title("Pick a date")

@@ -11,9 +11,8 @@ Results are therefore pushed onto a thread-safe queue that a single
 import queue
 import threading
 import tkinter as tk
-from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any
+from typing import Callable, Any
 
 # One shared, bounded pool instead of a brand-new thread per request.
 _POOL = ThreadPoolExecutor(max_workers=8, thread_name_prefix="frankfurter-io")
@@ -29,7 +28,7 @@ class _Dispatcher:
 
     def __init__(self, root: tk.Misc):
         self._root = root
-        self._q: queue.SimpleQueue[tuple[Callable, Any, Any]] = queue.SimpleQueue()
+        self._q: "queue.SimpleQueue[tuple[Callable, Any, Any]]" = queue.SimpleQueue()
         self._alive = True
         self._root.after(self.POLL_MS, self._poll)
 
@@ -55,12 +54,17 @@ class _Dispatcher:
                 try:
                     cb(result, exc)
                 except Exception as e:  # never let one bad callback kill the loop
-                    try:
-                        self._root.report_callback_exception(
-                            type(e), e, e.__traceback__
-                        )
-                    except Exception:
-                        pass
+                    # report_callback_exception lives on tk.Tk, not tk.Misc
+                    handler = getattr(self._root, "report_callback_exception", None)
+                    if handler is not None:
+                        try:
+                            handler(type(e), e, e.__traceback__)
+                        except Exception:
+                            pass
+                    else:
+                        import traceback
+
+                        traceback.print_exception(type(e), e, e.__traceback__)
         except queue.Empty:
             pass
         try:

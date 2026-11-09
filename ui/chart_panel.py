@@ -8,15 +8,14 @@ import customtkinter as ctk
 import matplotlib
 
 matplotlib.use("TkAgg")
-from datetime import datetime
-from typing import Any
-
 import matplotlib.dates as mdates
 import matplotlib.ticker as mticker
-import numpy as np
-import pandas as pd
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 from matplotlib.figure import Figure
+from typing import Any
+import pandas as pd
+import numpy as np
+from datetime import datetime
 
 from ui.theme import *
 
@@ -129,7 +128,7 @@ class ChartPanel(ctk.CTkFrame):
         tf.pack(fill="x", padx=PAD_MD, pady=(0, PAD_SM))
         nav = NavigationToolbar2Tk(self._mpl_canvas, tf, pack_toolbar=False)
         try:
-            nav.config(background=BG_CARD)  # type: ignore[attr-defined]
+            nav.config(background=BG_CARD)
             for ch in nav.winfo_children():
                 for opts in (
                     # buttons / checkbuttons: dark background, light glyphs
@@ -146,14 +145,17 @@ class ChartPanel(ctk.CTkFrame):
                     dict(background=BG_CARD),
                 ):
                     try:
-                        ch.config(**opts)  # type: ignore[attr-defined]
+                        # Children are mixed widget types, so options are
+                        # passed as Tk's ``cnf`` dict; unsupported sets raise
+                        # TclError and the next (smaller) set is tried.
+                        ch.configure(opts)
                         break
                     except Exception:
                         continue
             # matplotlib picks light or dark icon variants from the button
             # colours; re-run that now that the buttons are dark so the icons
             # are visible instead of black-on-black.
-            nav._rescale()  # type: ignore[attr-defined]
+            nav._rescale()
         except Exception:
             pass
         nav.update()
@@ -461,7 +463,8 @@ class ChartPanel(ctk.CTkFrame):
         if m.empty:
             return
         m.columns = ["open", "high", "low", "close"]
-        x = mdates.date2num(m.index.to_pydatetime())
+        # resample() keeps a DatetimeIndex; wrap it so the type is explicit
+        x = mdates.date2num(pd.DatetimeIndex(m.index).to_pydatetime())
         o, h, l, c = (
             m[k].to_numpy(dtype=float) for k in ("open", "high", "low", "close")
         )
@@ -643,10 +646,10 @@ class ChartPanel(ctk.CTkFrame):
 
     # ── hover read-out ────────────────────────────────────────────────────────
 
-    def _ensure_hover_artists(self):
+    def _ensure_hover_artists(self, x0: float):
         if not self._hover_artists:
             vline = self._ax.axvline(
-                self._hover_x[0],
+                x0,
                 color=TEXT_MUTED,
                 linewidth=0.8,
                 linestyle=":",
@@ -684,8 +687,8 @@ class ChartPanel(ctk.CTkFrame):
             or (self._mode == "series" and self._seg.get() not in self._HOVERABLE)
         ):
             return
-        vline, dots, tip = self._ensure_hover_artists()
         xs = self._hover_x
+        vline, dots, tip = self._ensure_hover_artists(float(xs[0]))
         idx = int(np.clip(np.searchsorted(xs, event.xdata), 0, len(xs) - 1))
         if idx > 0 and abs(xs[idx - 1] - event.xdata) < abs(xs[idx] - event.xdata):
             idx -= 1
@@ -713,7 +716,8 @@ class ChartPanel(ctk.CTkFrame):
         right_half = ax_x[0] > 0.6
         tip.xy = (ax_x[0], 0.98)
         tip.set_position((-8, -4) if right_half else (8, -4))
-        tip.set_ha("right" if right_half else "left")
+        # set_ha is a runtime-generated alias; use the real method name
+        tip.set_horizontalalignment("right" if right_half else "left")
         tip.set_visible(True)
         self._mpl_canvas.draw_idle()
 

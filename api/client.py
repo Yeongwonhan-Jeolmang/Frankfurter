@@ -10,15 +10,15 @@ response into the same shape the UI expects:
   - get_currencies                        → {iso_code: name, ...}
 """
 
+import httpx
 import math
-import statistics
 import threading
+import statistics
 import time
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date
-
-import httpx
+from typing import Optional
 
 BASE_URL = "https://api.frankfurter.dev/v2"
 TIMEOUT = 15
@@ -222,7 +222,7 @@ class FrankfurterClient:
 
     # ── Latest rates ──────────────────────────────────────────────────────────
 
-    def get_latest_rates(self, base="EUR", quotes: list | None = None) -> dict:
+    def get_latest_rates(self, base="EUR", quotes: Optional[list] = None) -> dict:
         """
         Returns {"date": ..., "base": ..., "rates": {quote: rate, ...}}
         """
@@ -243,7 +243,7 @@ class FrankfurterClient:
     # ── Historical single date ────────────────────────────────────────────────
 
     def get_rates_on_date(
-        self, on_date: str, base="EUR", quotes: list | None = None
+        self, on_date: str, base="EUR", quotes: Optional[list] = None
     ) -> dict:
         """
         Returns {"date": ..., "base": ..., "rates": {quote: rate, ...}}
@@ -267,10 +267,10 @@ class FrankfurterClient:
     def get_time_series(
         self,
         start: str,
-        end: str | None = None,
+        end: Optional[str] = None,
         base="EUR",
-        quotes: list | None = None,
-        group: str | None = None,
+        quotes: Optional[list] = None,
+        group: Optional[str] = None,
     ) -> dict:
         """
         Returns {"rates": {"YYYY-MM-DD": {quote: rate, ...}, ...}}
@@ -297,7 +297,7 @@ class FrankfurterClient:
     # ── Single pair ───────────────────────────────────────────────────────────
 
     def get_single_rate(
-        self, base: str, quote: str, on_date: str | None = None
+        self, base: str, quote: str, on_date: Optional[str] = None
     ) -> dict:
         """
         Returns {"date": ..., "base": ..., "quote": ..., "rate": float}
@@ -373,7 +373,7 @@ class FrankfurterClient:
     # ── Statistics ────────────────────────────────────────────────────────────
 
     def get_volatility_stats(
-        self, base: str, quote: str, start: str, end: str | None = None
+        self, base: str, quote: str, start: str, end: Optional[str] = None
     ) -> dict:
         data = self.get_time_series(start, end, base, [quote])
         values = _sorted_values(data.get("rates", {}), quote)
@@ -411,11 +411,13 @@ class FrankfurterClient:
         peak = values[0]
         max_dd = 0.0
         for v in values:
-            peak = max(peak, v)
+            if v > peak:
+                peak = v
             if peak == 0:
                 continue
             dd = (peak - v) / peak * 100
-            max_dd = max(max_dd, dd)
+            if dd > max_dd:
+                max_dd = dd
         return max_dd
 
     # ── Year heatmap data ─────────────────────────────────────────────────────
@@ -437,7 +439,10 @@ class FrankfurterClient:
         today = date.today()
         end_year = min(end_year, today.year)
         # Include December of the previous year as the opening reference
-        start = f"{start_year - 1}-12-01"
+        # (no reference month before the API's first date, 1948-01-01)
+        start = (
+            f"{start_year - 1}-12-01" if start_year > 1948 else f"{start_year}-01-01"
+        )
         end = min(f"{end_year}-12-31", today.isoformat())
         data = self.get_time_series(start, end, base, [quote], group="month")
         rates_map = data.get("rates", {})
@@ -499,7 +504,7 @@ class FrankfurterClient:
 
     # ── internal ──────────────────────────────────────────────────────────────
 
-    def _get(self, path: str, params: dict | None = None):
+    def _get(self, path: str, params: Optional[dict] = None):
         """GET *path* and return decoded JSON, retrying transient failures."""
         last_err: FrankfurterAPIError | None = None
         for attempt in range(MAX_RETRIES + 1):

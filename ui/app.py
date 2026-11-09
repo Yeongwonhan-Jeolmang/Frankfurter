@@ -6,24 +6,24 @@ import sys
 
 import customtkinter as ctk
 
-from api.client import FrankfurterClient
-from ui.tabs import (
-    CompareTab,
-    ConverterTab,
-    CurrencyDetailTab,
-    DashboardTab,
-    HeatmapTab,
-    HistoricalTab,
-    MatrixTab,
-    ProvidersTab,
-    StatsTab,
-    TimeSeriesTab,
-    WatchlistTab,
-)
 from ui.theme import *
 from ui.widgets import StatusBar
-from utils.settings import Settings
+from ui.tabs import (
+    DashboardTab,
+    HistoricalTab,
+    TimeSeriesTab,
+    ConverterTab,
+    CompareTab,
+    StatsTab,
+    HeatmapTab,
+    MatrixTab,
+    WatchlistTab,
+    CurrencyDetailTab,
+    ProvidersTab,
+)
+from api.client import FrankfurterClient
 from utils.workers import AsyncWorker
+from utils.settings import Settings
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("dark-blue")
@@ -150,7 +150,13 @@ class App(ctk.CTk):
     def _on_enter(self, event=None) -> None:
         """Delegate Enter to the active tab's _fetch method if it exists."""
         # Don't hijack Enter inside multi-line text boxes
-        if event is not None and event.widget.winfo_class() == "Text":
+        # (event.widget can be a plain string for Tk-internal widgets such as
+        # combobox drop-down menus, so don't assume it has winfo_class)
+        widget = getattr(event, "widget", None)
+        try:
+            if widget is not None and widget.winfo_class() == "Text":
+                return
+        except AttributeError:
             return
         try:
             label = self._tabview.get()
