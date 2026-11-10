@@ -52,10 +52,19 @@ class CompareTab(BaseTab):
         sb.add(self._pct, after=PAD_SM)
 
         self._sel_lbl = make_label("", FONT_LABEL, TEXT_MUTED)
-        sb.add(hbox(self._sel_lbl, None, make_button("Clear", self._clear_checks, "muted", width=52)))
+        sb.add(
+            hbox(
+                self._sel_lbl,
+                None,
+                make_button("Clear", self._clear_checks, "muted", width=52),
+            )
+        )
         sb.add(SearchEntry("Filter currencies…", on_change=self._filter_checks))
         self._checks = CurrencyChecklist(
-            self._codes, self._names, saved_or(s, "cmp_quotes", None) or self.DEFAULTS, height=200
+            self._codes,
+            self._names,
+            saved_or(s, "cmp_quotes", None) or self.DEFAULTS,
+            height=200,
         )
         self._checks.changed.connect(self._update_sel_count)
         sb.add(self._checks)
@@ -67,8 +76,20 @@ class CompareTab(BaseTab):
         sb.add(quick_range_chips(self._start_e, self._end_e, self._fetch))
 
         sb.separator()
-        sb.add(make_button("⬇  CSV", lambda: self._export_csv_data(self._last, "compare"), "secondary"))
-        sb.add(make_button("⬇  JSON", lambda: self._export_json_data(self._last, "compare"), "secondary"))
+        sb.add(
+            make_button(
+                "⬇  CSV",
+                lambda: self._export_csv_data(self._last, "compare"),
+                "secondary",
+            )
+        )
+        sb.add(
+            make_button(
+                "⬇  JSON",
+                lambda: self._export_json_data(self._last, "compare"),
+                "secondary",
+            )
+        )
 
         main = self._split(sb, margins=PAD_MD)
         self._chart = ChartPanel(show_types=False)
@@ -106,7 +127,9 @@ class CompareTab(BaseTab):
             return
         quotes = selected[: self.MAX_SERIES]
         if self._settings:
-            self._settings.update(cmp_base=base, cmp_start=start, cmp_end=end, cmp_quotes=quotes)
+            self._settings.update(
+                cmp_base=base, cmp_start=start, cmp_end=end, cmp_quotes=quotes
+            )
 
         def work():
             # One request for all quotes instead of one request per quote

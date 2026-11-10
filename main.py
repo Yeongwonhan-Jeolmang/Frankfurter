@@ -19,7 +19,9 @@ from ui.theme import FONT_BODY, apply_dark_palette, build_stylesheet, qfont
 
 
 def create_application(argv=None) -> QApplication:
-    app = QApplication.instance() or QApplication(argv if argv is not None else sys.argv)
+    app = QApplication.instance() or QApplication(
+        argv if argv is not None else sys.argv
+    )
     app.setApplicationName("Frankfurter")
     app.setApplicationDisplayName("Frankfurter")
     app.setOrganizationName("Frankfurter")

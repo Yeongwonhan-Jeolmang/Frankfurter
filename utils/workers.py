@@ -11,8 +11,9 @@ GUI thread's event loop (no polling timer needed, unlike the Tk version).
 from __future__ import annotations
 
 import traceback
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Callable
+from typing import Any
 
 from PyQt6.QtCore import QCoreApplication, QObject, pyqtSignal, pyqtSlot
 
@@ -25,14 +26,14 @@ class _Dispatcher(QObject):
 
     deliver = pyqtSignal(object, object, object)
 
-    _instance: "_Dispatcher | None" = None
+    _instance: _Dispatcher | None = None
 
     def __init__(self):
         super().__init__()
         self.deliver.connect(self._dispatch)
 
     @classmethod
-    def instance(cls) -> "_Dispatcher":
+    def instance(cls) -> _Dispatcher:
         # Created lazily on first use, which always happens on the GUI thread
         # (AsyncWorker.start is only ever called from GUI code).
         if cls._instance is None:

@@ -64,7 +64,10 @@ class _InteractiveTable(QTableView):
         if obj is self.viewport():
             if ev.type() == QEvent.Type.MouseMove:
                 idx = self.indexAt(ev.position().toPoint())
-                self._set_hover(idx.row() if idx.isValid() else -1, idx.column() if idx.isValid() else -1)
+                self._set_hover(
+                    idx.row() if idx.isValid() else -1,
+                    idx.column() if idx.isValid() else -1,
+                )
             elif ev.type() == QEvent.Type.Leave:
                 self._set_hover(-1, -1)
         return super().eventFilter(obj, ev)
@@ -117,7 +120,9 @@ class RateModel(QAbstractTableModel):
         # filtering / sorting / pinning never wipes the indicators.
         if self._prev_base == base and self._prev:
             self._changes = {
-                c: ((r - self._prev[c]) / self._prev[c] * 100) if self._prev.get(c) else None
+                c: ((r - self._prev[c]) / self._prev[c] * 100)
+                if self._prev.get(c)
+                else None
                 for c, r in rates.items()
             }
         else:
@@ -148,7 +153,9 @@ class RateModel(QAbstractTableModel):
         self.beginResetModel()
         self._pinned = set()
         if self._settings:
-            self._pinned = {q for b, q in self._settings.get_favourites() if b == self.base}
+            self._pinned = {
+                q for b, q in self._settings.get_favourites() if b == self.base
+            }
         codes = list(self._rates)
         if self._filter:
             f = self._filter
@@ -385,7 +392,10 @@ class WatchlistModel(QAbstractTableModel):
         return 0 if parent.isValid() else len(self.HEADERS)
 
     def headerData(self, section, orientation, role=Qt.ItemDataRole.DisplayRole):
-        if orientation == Qt.Orientation.Horizontal and role == Qt.ItemDataRole.DisplayRole:
+        if (
+            orientation == Qt.Orientation.Horizontal
+            and role == Qt.ItemDataRole.DisplayRole
+        ):
             return self.HEADERS[section]
         if role == Qt.ItemDataRole.TextAlignmentRole:
             return _ALIGN_CENTER if section in (0, 4) else _ALIGN_LEFT
@@ -491,7 +501,13 @@ class WatchlistPanel(_InteractiveTable):
         self.set_empty_visible(not snapshots)
 
     def remove(self, base: str, quote: str) -> None:
-        self.refresh([s for s in self._model.snaps if (s.get("base"), s.get("quote")) != (base, quote)])
+        self.refresh(
+            [
+                s
+                for s in self._model.snaps
+                if (s.get("base"), s.get("quote")) != (base, quote)
+            ]
+        )
 
     def _on_click(self, idx) -> None:
         pair = self._model.pair_at(idx.row())

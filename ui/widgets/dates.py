@@ -44,8 +44,12 @@ class CalendarPopup(QFrame):
         cal = QCalendarWidget()
         cal.setGridVisible(False)
         cal.setFirstDayOfWeek(Qt.DayOfWeek.Monday)
-        cal.setVerticalHeaderFormat(QCalendarWidget.VerticalHeaderFormat.NoVerticalHeader)
-        cal.setHorizontalHeaderFormat(QCalendarWidget.HorizontalHeaderFormat.ShortDayNames)
+        cal.setVerticalHeaderFormat(
+            QCalendarWidget.VerticalHeaderFormat.NoVerticalHeader
+        )
+        cal.setHorizontalHeaderFormat(
+            QCalendarWidget.HorizontalHeaderFormat.ShortDayNames
+        )
         cal.setMinimumDate(QDate(MIN_DATE.year, MIN_DATE.month, MIN_DATE.day))
         t = date.today()
         cal.setMaximumDate(QDate(t.year, t.month, t.day))
@@ -100,7 +104,9 @@ class DateEntry(QWidget):
         self.entry.setMaxLength(10)
         self.entry.textEdited.connect(lambda _t: set_error(self.entry, False))
         lay.addWidget(self.entry, 1)
-        self._btn = make_button("📅", self.open_picker, "outline", width=34, tooltip="Pick a date")
+        self._btn = make_button(
+            "📅", self.open_picker, "outline", width=34, tooltip="Pick a date"
+        )
         lay.addWidget(self._btn)
 
     def open_picker(self) -> None:

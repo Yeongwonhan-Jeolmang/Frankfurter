@@ -71,13 +71,23 @@ class WatchlistTab(BaseTab):
             e.setMaxLength(3)
             e.setProperty("mono", True)
             e.setFixedWidth(68)
-        sb.add(hbox(self._add_base, make_label("/", FONT_HEADING, TEXT_MUTED), self._add_quote,
-                    make_button("+", self._add_pair, width=38, tooltip="Add pair"), None, spacing=4))
+        sb.add(
+            hbox(
+                self._add_base,
+                make_label("/", FONT_HEADING, TEXT_MUTED),
+                self._add_quote,
+                make_button("+", self._add_pair, width=38, tooltip="Add pair"),
+                None,
+                spacing=4,
+            )
+        )
         sb.separator()
         sb.add(make_button("⟳  Refresh All", lambda: self._refresh(force=True)))
         sb.add(make_button("🗑  Clear All", self._clear, "secondary"))
-        sb.note("Pairs persist between sessions.\nClick a pair to chart it.\n"
-                "★ pins it to the top, ✕ removes it.")
+        sb.note(
+            "Pairs persist between sessions.\nClick a pair to chart it.\n"
+            "★ pins it to the top, ✕ removes it."
+        )
 
         main = self._split(sb)
         split = QSplitter(Qt.Orientation.Vertical)
@@ -89,7 +99,9 @@ class WatchlistTab(BaseTab):
         tl.setContentsMargins(0, 0, 0, 0)
         tl.addWidget(SectionHeader("Watched Pairs  (click to chart • ★ to pin)"))
         self._wl = WatchlistPanel(
-            settings=self._settings, on_select=self._plot_pair, on_remove=self._remove_pair
+            settings=self._settings,
+            on_select=self._plot_pair,
+            on_remove=self._remove_pair,
         )
         self._wl.setMinimumHeight(110)
         tl.addWidget(self._wl, 1)
@@ -184,7 +196,9 @@ class WatchlistTab(BaseTab):
             self._wl.refresh(snaps)
             failed = sum(1 for s in snaps if s.get("error"))
             if failed:
-                msg = f"Watchlist refreshed  •  {len(snaps) - failed} ok, {failed} failed"
+                msg = (
+                    f"Watchlist refreshed  •  {len(snaps) - failed} ok, {failed} failed"
+                )
             else:
                 msg = f"Watchlist refreshed  •  {len(snaps)} pairs"
             self._plot_pair(*self._selected, msg=msg, ok=not failed)
@@ -204,6 +218,8 @@ class WatchlistTab(BaseTab):
                 self._status(f"Chart error for {base}/{quote}: {err}", "error")
                 return
             self._chart.plot_series(data, base, quote)
-            self._status(msg or f"{base}/{quote}  •  1-year chart", "ok" if ok else "error")
+            self._status(
+                msg or f"{base}/{quote}  •  1-year chart", "ok" if ok else "error"
+            )
 
         self._run(work, done, skeleton=self._skeleton, channel="chart")

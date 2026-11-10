@@ -9,15 +9,15 @@ from __future__ import annotations
 import matplotlib
 
 matplotlib.use("QtAgg")
+from datetime import datetime
+from typing import Any
+
 import matplotlib.dates as mdates
 import matplotlib.ticker as mticker
+import numpy as np
+import pandas as pd
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg, NavigationToolbar2QT
 from matplotlib.figure import Figure
-from typing import Any
-import pandas as pd
-import numpy as np
-from datetime import datetime
-
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QFileDialog,
@@ -99,7 +99,9 @@ class ChartPanel(QFrame):
     def _build_toolbar(self, lay: QVBoxLayout) -> None:
         bar = QHBoxLayout()
         bar.setSpacing(PAD_MD)
-        self._seg = SegmentedButton(self.CHART_TYPES, "Line", command=lambda _v: self._render())
+        self._seg = SegmentedButton(
+            self.CHART_TYPES, "Line", command=lambda _v: self._render()
+        )
         if self._show_types:
             bar.addWidget(make_label("Chart:", FONT_LABEL, TEXT_MUTED))
             # Scrolls sideways instead of forcing a wide minimum window size
@@ -116,7 +118,9 @@ class ChartPanel(QFrame):
         else:
             self._seg.hide()
             bar.addStretch(1)
-        self._save_btn = make_button("💾 Save", self._save, "outline", width=84, height=28)
+        self._save_btn = make_button(
+            "💾 Save", self._save, "outline", width=84, height=28
+        )
         bar.addWidget(self._save_btn, 0, Qt.AlignmentFlag.AlignTop)
         lay.addLayout(bar)
 
@@ -128,7 +132,9 @@ class ChartPanel(QFrame):
         self._mpl_canvas = FigureCanvasQTAgg(self._fig)
         self._mpl_canvas.setStyleSheet(f"background: {BG_CARD};")
         self._mpl_canvas.setMinimumSize(240, 160)
-        self._mpl_canvas.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self._mpl_canvas.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
         lay.addWidget(self._mpl_canvas, 1)
         # The toolbar picks light icons automatically from the dark palette
         nav = NavigationToolbar2QT(self._mpl_canvas, self, coordinates=True)

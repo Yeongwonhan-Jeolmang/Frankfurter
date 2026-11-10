@@ -6,8 +6,8 @@ segmented buttons, the sidebar container and the status bar.
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterable
 from datetime import datetime
-from typing import Callable, Iterable
 
 from PyQt6.QtCore import QSize, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QFont, QFontMetrics
@@ -28,7 +28,6 @@ from PyQt6.QtWidgets import (
 )
 
 from ui.theme import *
-
 
 # ── tiny helpers ──────────────────────────────────────────────────────────────
 
@@ -173,13 +172,18 @@ class StatCard(QFrame):
         """Shrink the value (down to 9 pt) and caption (down to 7 pt) fonts until
         they fit the card, so narrow cards — e.g. the 7-across Statistics grid —
         stay readable instead of being clipped."""
-        for lbl, base, floor in ((self._val, self._base_font, 9), (self._lbl, self._cap_font, 7)):
+        for lbl, base, floor in (
+            (self._val, self._base_font, 9),
+            (self._lbl, self._cap_font, 7),
+        ):
             avail = lbl.width() - 2
             if avail <= 0:
                 continue
             f = QFont(base)
             size = f.pointSizeF()
-            while size > floor and QFontMetrics(f).horizontalAdvance(lbl.text()) > avail:
+            while (
+                size > floor and QFontMetrics(f).horizontalAdvance(lbl.text()) > avail
+            ):
                 size -= 0.5
                 f.setPointSizeF(size)
             if f != lbl.font():
@@ -233,12 +237,16 @@ class StatusBar(QFrame):
         lay.setSpacing(PAD_SM)
         self._dot = make_label("●", (FONT_BODY[0], 10), ACCENT_GREEN)
         self._msg = make_label("Ready", FONT_SMALL, TEXT_MUTED)
-        self._msg.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self._msg.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
+        )
         self._time = make_label("", FONT_SMALL, TEXT_DIM)
         lay.addWidget(self._dot)
         lay.addWidget(self._msg, 1)
         lay.addWidget(self._time)
-        lay.addWidget(make_label("api.frankfurter.dev  •  ECB Data", FONT_SMALL, TEXT_DIM))
+        lay.addWidget(
+            make_label("api.frankfurter.dev  •  ECB Data", FONT_SMALL, TEXT_DIM)
+        )
 
     def set_status(self, msg: str, state: str = "ok") -> None:
         set_color(self._dot, self._COLORS.get(state, ACCENT_GOLD))
@@ -282,7 +290,9 @@ class CodeCombo(QComboBox):
         self.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
         self.setMaxVisibleItems(16)
         self.setProperty("mono", True)
-        self.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.setSizeAdjustPolicy(
+            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+        )
         self.setMinimumContentsLength(5)
         self.addItems(list(values))
         comp = QCompleter(list(values), self)
@@ -368,7 +378,15 @@ class SegmentedButton(QWidget):
             b = QPushButton(v)
             b.setCheckable(True)
             b.setCursor(Qt.CursorShape.PointingHandCursor)
-            pos = "only" if n == 1 else "first" if i == 0 else "last" if i == n - 1 else "mid"
+            pos = (
+                "only"
+                if n == 1
+                else "first"
+                if i == 0
+                else "last"
+                if i == n - 1
+                else "mid"
+            )
             b.setProperty("segment", pos)
             self._group.addButton(b)
             lay.addWidget(b)
@@ -453,7 +471,9 @@ class Sidebar(QScrollArea):
         return self.add(make_label(text, FONT_LABEL, color))
 
     def note(self, text: str) -> QLabel:
-        return self.add(make_label(text, FONT_SMALL, TEXT_MUTED, wrap=True), before=PAD_SM)
+        return self.add(
+            make_label(text, FONT_SMALL, TEXT_MUTED, wrap=True), before=PAD_SM
+        )
 
     def sizeHint(self) -> QSize:
         return QSize(self.width(), 400)

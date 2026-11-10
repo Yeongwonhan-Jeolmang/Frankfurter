@@ -10,15 +10,15 @@ response into the same shape the UI expects:
   - get_currencies                        → {iso_code: name, ...}
 """
 
-import httpx
 import math
-import threading
 import statistics
+import threading
 import time
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date
-from typing import Optional
+
+import httpx
 
 BASE_URL = "https://api.frankfurter.dev/v2"
 TIMEOUT = 15
@@ -222,7 +222,7 @@ class FrankfurterClient:
 
     # ── Latest rates ──────────────────────────────────────────────────────────
 
-    def get_latest_rates(self, base="EUR", quotes: Optional[list] = None) -> dict:
+    def get_latest_rates(self, base="EUR", quotes: list | None = None) -> dict:
         """
         Returns {"date": ..., "base": ..., "rates": {quote: rate, ...}}
         """
@@ -243,7 +243,7 @@ class FrankfurterClient:
     # ── Historical single date ────────────────────────────────────────────────
 
     def get_rates_on_date(
-        self, on_date: str, base="EUR", quotes: Optional[list] = None
+        self, on_date: str, base="EUR", quotes: list | None = None
     ) -> dict:
         """
         Returns {"date": ..., "base": ..., "rates": {quote: rate, ...}}
@@ -267,10 +267,10 @@ class FrankfurterClient:
     def get_time_series(
         self,
         start: str,
-        end: Optional[str] = None,
+        end: str | None = None,
         base="EUR",
-        quotes: Optional[list] = None,
-        group: Optional[str] = None,
+        quotes: list | None = None,
+        group: str | None = None,
     ) -> dict:
         """
         Returns {"rates": {"YYYY-MM-DD": {quote: rate, ...}, ...}}
@@ -297,7 +297,7 @@ class FrankfurterClient:
     # ── Single pair ───────────────────────────────────────────────────────────
 
     def get_single_rate(
-        self, base: str, quote: str, on_date: Optional[str] = None
+        self, base: str, quote: str, on_date: str | None = None
     ) -> dict:
         """
         Returns {"date": ..., "base": ..., "quote": ..., "rate": float}
@@ -373,7 +373,7 @@ class FrankfurterClient:
     # ── Statistics ────────────────────────────────────────────────────────────
 
     def get_volatility_stats(
-        self, base: str, quote: str, start: str, end: Optional[str] = None
+        self, base: str, quote: str, start: str, end: str | None = None
     ) -> dict:
         data = self.get_time_series(start, end, base, [quote])
         values = _sorted_values(data.get("rates", {}), quote)
@@ -411,13 +411,11 @@ class FrankfurterClient:
         peak = values[0]
         max_dd = 0.0
         for v in values:
-            if v > peak:
-                peak = v
+            peak = max(peak, v)
             if peak == 0:
                 continue
             dd = (peak - v) / peak * 100
-            if dd > max_dd:
-                max_dd = dd
+            max_dd = max(max_dd, dd)
         return max_dd
 
     # ── Year heatmap data ─────────────────────────────────────────────────────
@@ -504,7 +502,7 @@ class FrankfurterClient:
 
     # ── internal ──────────────────────────────────────────────────────────────
 
-    def _get(self, path: str, params: Optional[dict] = None):
+    def _get(self, path: str, params: dict | None = None):
         """GET *path* and return decoded JSON, retrying transient failures."""
         last_err: FrankfurterAPIError | None = None
         for attempt in range(MAX_RETRIES + 1):

@@ -25,6 +25,7 @@ from ui.widgets.loading import SkeletonOverlay, SpinnerLabel
 from ui.widgets.tables import RateTable, WatchlistPanel
 
 __all__ = [
+    "MIN_DATE",
     "CalendarPopup",
     "ChipGrid",
     "CodeCombo",
@@ -32,7 +33,6 @@ __all__ = [
     "DateEntry",
     "Field",
     "HSeparator",
-    "MIN_DATE",
     "RateTable",
     "SearchEntry",
     "SectionHeader",

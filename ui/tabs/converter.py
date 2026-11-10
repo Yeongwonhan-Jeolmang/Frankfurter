@@ -50,9 +50,14 @@ class ConverterTab(BaseTab):
         outer = QVBoxLayout(body)
         outer.setContentsMargins(60, 30, 60, 20)
         outer.setSpacing(PAD_SM)
-        outer.addWidget(make_label(
-            "Currency Converter", FONT_DISPLAY, ACCENT_GOLD, align=Qt.AlignmentFlag.AlignCenter
-        ))
+        outer.addWidget(
+            make_label(
+                "Currency Converter",
+                FONT_DISPLAY,
+                ACCENT_GOLD,
+                align=Qt.AlignmentFlag.AlignCenter,
+            )
+        )
         outer.addSpacing(PAD_LG)
 
         card = QFrame()
@@ -71,13 +76,21 @@ class ConverterTab(BaseTab):
         self._amt.setPlaceholderText("1000.00")
         self._amt.setMinimumWidth(160)
         self._amt.textEdited.connect(lambda _t: self._live_update())
-        self._from = CodeCombo(self._codes, saved_or(s, "conv_from", "EUR"),
-                               command=lambda _t: self._reconvert())
-        self._to = CodeCombo(self._codes, saved_or(s, "conv_to", "USD"),
-                             command=lambda _t: self._reconvert())
+        self._from = CodeCombo(
+            self._codes,
+            saved_or(s, "conv_from", "EUR"),
+            command=lambda _t: self._reconvert(),
+        )
+        self._to = CodeCombo(
+            self._codes,
+            saved_or(s, "conv_to", "USD"),
+            command=lambda _t: self._reconvert(),
+        )
         for cb in (self._from, self._to):
             cb.setMinimumWidth(130)
-        swap = make_button("⇄", self._swap, "glyph", width=44, tooltip="Swap currencies")
+        swap = make_button(
+            "⇄", self._swap, "glyph", width=44, tooltip="Swap currencies"
+        )
         convert = make_button("Convert", self._convert, width=110)
         row1.addWidget(Field("Amount", self._amt), 0, 0)
         row1.addWidget(Field("From", self._from), 0, 1)
@@ -101,27 +114,54 @@ class ConverterTab(BaseTab):
         for rb in (self._fwd, self._rev):
             self._dir_group.addButton(rb)
         self._fwd.toggled.connect(lambda _on: self._live_update())
-        cl.addWidget(hbox(make_label("Direction:", FONT_SMALL, TEXT_MUTED), self._fwd, self._rev, None,
-                          spacing=PAD_MD))
+        cl.addWidget(
+            hbox(
+                make_label("Direction:", FONT_SMALL, TEXT_MUTED),
+                self._fwd,
+                self._rev,
+                None,
+                spacing=PAD_MD,
+            )
+        )
 
         # Optional historical date
         self._date_e = DateEntry()
         self._date_e.setFixedWidth(170)
         self._date_e.picked.connect(lambda _d: self._reconvert())
-        latest = make_button("Latest", lambda: (self._date_e.set(""), self._reconvert()), "muted", width=64)
-        cl.addWidget(hbox(make_label("Date (leave blank for latest):", FONT_SMALL, TEXT_MUTED),
-                          self._date_e, latest, None, spacing=PAD_MD))
+        latest = make_button(
+            "Latest",
+            lambda: (self._date_e.set(""), self._reconvert()),
+            "muted",
+            width=64,
+        )
+        cl.addWidget(
+            hbox(
+                make_label("Date (leave blank for latest):", FONT_SMALL, TEXT_MUTED),
+                self._date_e,
+                latest,
+                None,
+                spacing=PAD_MD,
+            )
+        )
 
         cl.addWidget(HSeparator())
 
-        self._res = make_label("—", (FONT_DISPLAY[0], 28, "bold"), ACCENT_GOLD,
-                               align=Qt.AlignmentFlag.AlignCenter)
+        self._res = make_label(
+            "—",
+            (FONT_DISPLAY[0], 28, "bold"),
+            ACCENT_GOLD,
+            align=Qt.AlignmentFlag.AlignCenter,
+        )
         self._res.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        self._detail = make_label("", FONT_MONO, TEXT_MUTED, align=Qt.AlignmentFlag.AlignCenter)
+        self._detail = make_label(
+            "", FONT_MONO, TEXT_MUTED, align=Qt.AlignmentFlag.AlignCenter
+        )
         self._detail.setWordWrap(True)
         cl.addWidget(self._res)
         cl.addWidget(self._detail)
-        self._copy_btn = make_button("📋  Copy Result", self._copy_to_clipboard, "outline", width=150)
+        self._copy_btn = make_button(
+            "📋  Copy Result", self._copy_to_clipboard, "outline", width=150
+        )
         cl.addWidget(self._copy_btn, 0, Qt.AlignmentFlag.AlignHCenter)
 
         outer.addSpacing(PAD_MD)
@@ -130,8 +170,11 @@ class ConverterTab(BaseTab):
         self._hist.setReadOnly(True)
         self._hist.setMinimumHeight(120)
         outer.addWidget(self._hist, 1)
-        outer.addWidget(make_button("🗑  Clear History", self._hist.clear, "secondary"),
-                        0, Qt.AlignmentFlag.AlignRight)
+        outer.addWidget(
+            make_button("🗑  Clear History", self._hist.clear, "secondary"),
+            0,
+            Qt.AlignmentFlag.AlignRight,
+        )
 
     # Enter key / F5 dispatch from the main window
     def _fetch(self):

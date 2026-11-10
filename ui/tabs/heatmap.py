@@ -48,10 +48,22 @@ class HeatmapTab(BaseTab):
         sb.add(Field("Quote", self._quote_e))
         self._start_yr = _year_box(2000)
         self._end_yr = _year_box(date.today().year)
-        sb.add(hbox(Field("Start Year", self._start_yr), Field("End Year", self._end_yr), spacing=4))
-        sb.add(make_button("🔥  Generate Heatmap", self._fetch), before=PAD_SM, after=PAD_SM)
-        sb.note("Shows the close-to-close % change for each year (current year = YTD). "
-                "Scroll or use ↑/↓ in the year boxes.")
+        sb.add(
+            hbox(
+                Field("Start Year", self._start_yr),
+                Field("End Year", self._end_yr),
+                spacing=4,
+            )
+        )
+        sb.add(
+            make_button("🔥  Generate Heatmap", self._fetch),
+            before=PAD_SM,
+            after=PAD_SM,
+        )
+        sb.note(
+            "Shows the close-to-close % change for each year (current year = YTD). "
+            "Scroll or use ↑/↓ in the year boxes."
+        )
 
         sb.separator()
         sb.add(make_button("⬇  CSV", self._do_csv, "secondary"))
@@ -81,11 +93,19 @@ class HeatmapTab(BaseTab):
 
         def write(data, path):
             with open(path, "w", newline="", encoding="utf-8") as f:
-                w = csv.DictWriter(f, fieldnames=["year", "base", "quote", "pct_change"])
+                w = csv.DictWriter(
+                    f, fieldnames=["year", "base", "quote", "pct_change"]
+                )
                 w.writeheader()
                 for yr, chg in sorted(data.items()):
-                    w.writerow({"year": yr, "base": self._last_base,
-                                "quote": self._last_quote, "pct_change": round(chg, 6)})
+                    w.writerow(
+                        {
+                            "year": yr,
+                            "base": self._last_base,
+                            "quote": self._last_quote,
+                            "pct_change": round(chg, 6),
+                        }
+                    )
 
         self._write_export(write, self._last_data, "heatmap", "csv")
 
@@ -96,7 +116,9 @@ class HeatmapTab(BaseTab):
         payload = {
             "base": self._last_base,
             "quote": self._last_quote,
-            "annual_changes": {str(yr): chg for yr, chg in sorted(self._last_data.items())},
+            "annual_changes": {
+                str(yr): chg for yr, chg in sorted(self._last_data.items())
+            },
         }
         self._write_export(export_to_json, payload, "heatmap", "json")
 
@@ -132,7 +154,9 @@ class HeatmapTab(BaseTab):
                 ups = sum(1 for v in data.values() if v >= 0)
                 self._c_best.set_value(f"{best[0]}  {best[1]:+.2f}%")
                 self._c_worst.set_value(f"{worst[0]}  {worst[1]:+.2f}%")
-                self._c_avg.set_value(f"{avg:+.2f}%", ACCENT_GREEN if avg >= 0 else ACCENT_RED)
+                self._c_avg.set_value(
+                    f"{avg:+.2f}%", ACCENT_GREEN if avg >= 0 else ACCENT_RED
+                )
                 self._c_up.set_value(f"{ups} / {len(data)}")
             else:
                 for c in (self._c_best, self._c_worst, self._c_avg, self._c_up):

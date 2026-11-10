@@ -6,7 +6,13 @@ import csv
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor
-from PyQt6.QtWidgets import QAbstractItemView, QHeaderView, QSplitter, QTableWidget, QTableWidgetItem
+from PyQt6.QtWidgets import (
+    QAbstractItemView,
+    QHeaderView,
+    QSplitter,
+    QTableWidget,
+    QTableWidgetItem,
+)
 
 from exports.exporter import export_to_json
 from ui.chart_panel import ChartPanel
@@ -35,13 +41,21 @@ class MatrixTab(BaseTab):
     def _build(self):
         sb = Sidebar("Cross-Rate Matrix")
         self._sel_lbl = sb.caption("")
-        sb.add(SearchEntry("Filter currencies…", on_change=lambda t: self._checks.apply_filter(t)))
+        sb.add(
+            SearchEntry(
+                "Filter currencies…", on_change=lambda t: self._checks.apply_filter(t)
+            )
+        )
         saved = self._settings.get("matrix_codes") if self._settings else None
-        self._checks = CurrencyChecklist(self._codes, self._names, saved or self.DEFAULTS, height=240)
+        self._checks = CurrencyChecklist(
+            self._codes, self._names, saved or self.DEFAULTS, height=240
+        )
         self._checks.changed.connect(self._update_sel_count)
         sb.add(self._checks)
         self._update_sel_count()
-        sb.add(make_button("🔢  Build Matrix", self._fetch), before=PAD_MD, after=PAD_SM)
+        sb.add(
+            make_button("🔢  Build Matrix", self._fetch), before=PAD_MD, after=PAD_SM
+        )
         sb.note("Each cell shows the rate:\nRow currency → Column currency")
         sb.separator()
         sb.add(make_button("⬇  CSV", self._do_csv, "secondary"))
@@ -57,11 +71,15 @@ class MatrixTab(BaseTab):
         self._table = QTableWidget()
         self._table.setObjectName("Framed")
         self._table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self._table.setSelectionMode(QAbstractItemView.SelectionMode.ContiguousSelection)
+        self._table.setSelectionMode(
+            QAbstractItemView.SelectionMode.ContiguousSelection
+        )
         self._table.setAlternatingRowColors(True)
         self._table.setShowGrid(False)
         self._table.setMinimumHeight(120)
-        self._table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self._table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Stretch
+        )
         self._table.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
         self._table.verticalHeader().setDefaultSectionSize(26)
         vh = self._table.verticalHeader()
@@ -79,7 +97,9 @@ class MatrixTab(BaseTab):
     def _update_sel_count(self):
         n = len(self._checks.selected())
         self._sel_lbl.setText(f"Selected {n}  (2–{self.MAX_CODES})")
-        set_color(self._sel_lbl, ACCENT_RED if n > self.MAX_CODES or n < 2 else TEXT_MUTED)
+        set_color(
+            self._sel_lbl, ACCENT_RED if n > self.MAX_CODES or n < 2 else TEXT_MUTED
+        )
 
     def _fill_table(self, matrix, codes):
         t = self._table
@@ -95,8 +115,18 @@ class MatrixTab(BaseTab):
                 it = QTableWidgetItem(f"{val:.4f}" if val is not None else "—")
                 it.setFont(mono)
                 it.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                it.setForeground(QColor(ACCENT_GOLD if b == q else TEXT_PRIMARY if val is not None else TEXT_DIM))
-                it.setToolTip(f"1 {b} = {val} {q}" if val is not None else f"{b}/{q}: no data")
+                it.setForeground(
+                    QColor(
+                        ACCENT_GOLD
+                        if b == q
+                        else TEXT_PRIMARY
+                        if val is not None
+                        else TEXT_DIM
+                    )
+                )
+                it.setToolTip(
+                    f"1 {b} = {val} {q}" if val is not None else f"{b}/{q}: no data"
+                )
                 t.setItem(i, j, it)
 
     def _do_csv(self):
@@ -111,7 +141,13 @@ class MatrixTab(BaseTab):
                 for b in self._last_codes:
                     for q in self._last_codes:
                         val = self._last_matrix.get(b, {}).get(q)
-                        w.writerow({"base": b, "quote": q, "rate": val if val is not None else ""})
+                        w.writerow(
+                            {
+                                "base": b,
+                                "quote": q,
+                                "rate": val if val is not None else "",
+                            }
+                        )
 
         self._write_export(write, None, "matrix", "csv")
 
@@ -120,7 +156,10 @@ class MatrixTab(BaseTab):
             self._status("Nothing to export yet — build a matrix first", "error")
             return
         self._write_export(
-            export_to_json, {"codes": self._last_codes, "matrix": self._last_matrix}, "matrix", "json"
+            export_to_json,
+            {"codes": self._last_codes, "matrix": self._last_matrix},
+            "matrix",
+            "json",
         )
 
     def _fetch(self):

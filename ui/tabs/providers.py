@@ -19,7 +19,12 @@ from ui.widgets import SearchEntry, SectionHeader, Sidebar, StatCard, hbox, make
 
 
 class ProvidersTab(BaseTab):
-    COLUMNS = (("Key", ACCENT_GOLD), ("Name", TEXT_PRIMARY), ("Country", TEXT_MUTED), ("Currencies", ACCENT_BLUE))
+    COLUMNS = (
+        ("Key", ACCENT_GOLD),
+        ("Name", TEXT_PRIMARY),
+        ("Country", TEXT_MUTED),
+        ("Currencies", ACCENT_BLUE),
+    )
 
     def __init__(self, client, currency_names, status_cb, settings=None, parent=None):
         super().__init__(client, currency_names, status_cb, settings, parent)
@@ -29,7 +34,9 @@ class ProvidersTab(BaseTab):
 
     def _build(self):
         sb = Sidebar("Data Providers")
-        sb.add(make_button("⟳  Load Providers", self._fetch), before=PAD_SM, after=PAD_SM)
+        sb.add(
+            make_button("⟳  Load Providers", self._fetch), before=PAD_SM, after=PAD_SM
+        )
         sb.note("Frankfurter sources data from 84 central banks worldwide.")
 
         main = self._split(sb)
@@ -44,7 +51,9 @@ class ProvidersTab(BaseTab):
         main.addWidget(cards)
         main.addSpacing(PAD_MD)
 
-        self._search = SearchEntry("Filter by key, name or country…", on_change=self._apply_filter)
+        self._search = SearchEntry(
+            "Filter by key, name or country…", on_change=self._apply_filter
+        )
         self._search.setFixedWidth(300)
         main.addWidget(hbox(SectionHeader("Provider List"), None, self._search))
 
@@ -58,7 +67,9 @@ class ProvidersTab(BaseTab):
         t.setShowGrid(False)
         t.setWordWrap(False)
         hh = t.horizontalHeader()
-        hh.setDefaultAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        hh.setDefaultAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+        )
         hh.setHighlightSections(False)
         hh.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         hh.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
@@ -108,7 +119,9 @@ class ProvidersTab(BaseTab):
                 else:
                     key = name = str(prov)
                     country, n_ccy, tip = "—", "—", ""
-                for c, (txt, (_h, color)) in enumerate(zip((key, name, country, n_ccy), self.COLUMNS)):
+                for c, (txt, (_h, color)) in enumerate(
+                    zip((key, name, country, n_ccy), self.COLUMNS)
+                ):
                     it = QTableWidgetItem(txt)
                     it.setForeground(QColor(color))
                     it.setFont(mono if c in (0, 3) else body)

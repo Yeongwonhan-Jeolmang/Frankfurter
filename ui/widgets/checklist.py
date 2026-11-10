@@ -25,7 +25,9 @@ class CurrencyChecklist(QListWidget):
             it = QListWidgetItem(f"{code}  {names.get(code, code)}")
             it.setData(Qt.ItemDataRole.UserRole, code)
             it.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsUserCheckable)
-            it.setCheckState(Qt.CheckState.Checked if code in checked else Qt.CheckState.Unchecked)
+            it.setCheckState(
+                Qt.CheckState.Checked if code in checked else Qt.CheckState.Unchecked
+            )
             self.addItem(it)
         self.blockSignals(False)
         self.itemChanged.connect(lambda _it: self.changed.emit())
@@ -56,7 +58,9 @@ class CurrencyChecklist(QListWidget):
         for i in range(self.count()):
             it = self.item(i)
             if it.data(Qt.ItemDataRole.UserRole) == code:
-                it.setCheckState(Qt.CheckState.Checked if on else Qt.CheckState.Unchecked)
+                it.setCheckState(
+                    Qt.CheckState.Checked if on else Qt.CheckState.Unchecked
+                )
                 return
 
     def clear_checks(self) -> None:

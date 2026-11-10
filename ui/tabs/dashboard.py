@@ -34,7 +34,8 @@ class DashboardTab(BaseTab):
 
         sb.add(SectionHeader("Base Currency"), after=PAD_SM)
         self._base = CodeCombo(
-            self._codes, saved_or(self._settings, "dashboard_base", "EUR"),
+            self._codes,
+            saved_or(self._settings, "dashboard_base", "EUR"),
             command=lambda _t: self._fetch(),
         )
         sb.add(self._base, after=PAD_MD)
@@ -46,8 +47,20 @@ class DashboardTab(BaseTab):
         sb.separator()
         sb.add(make_button("⟳  Refresh", lambda: self._fetch(force=True)))
         sb.separator()
-        sb.add(make_button("⬇  CSV", lambda: self._export_csv_data(self._last, "latest"), "secondary"))
-        sb.add(make_button("⬇  JSON", lambda: self._export_json_data(self._last, "latest"), "secondary"))
+        sb.add(
+            make_button(
+                "⬇  CSV",
+                lambda: self._export_csv_data(self._last, "latest"),
+                "secondary",
+            )
+        )
+        sb.add(
+            make_button(
+                "⬇  JSON",
+                lambda: self._export_json_data(self._last, "latest"),
+                "secondary",
+            )
+        )
 
         sb.separator()
         sb.caption("Currency Scope")
@@ -83,9 +96,11 @@ class DashboardTab(BaseTab):
         main.addWidget(cards)
         main.addSpacing(PAD_MD)
 
-        main.addWidget(SectionHeader(
-            "Exchange Rates  (click ★ to pin • header to sort • double-click to copy)"
-        ))
+        main.addWidget(
+            SectionHeader(
+                "Exchange Rates  (click ★ to pin • header to sort • double-click to copy)"
+            )
+        )
         self._table = RateTable(
             settings=self._settings,
             on_copy=lambda t: self._status(f"Copied  “{t}”", "ok"),

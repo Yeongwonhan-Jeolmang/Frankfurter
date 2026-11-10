@@ -83,7 +83,9 @@ class App(QMainWindow):
     # "window_geometry" is left alone so switching back still works)
     GEOMETRY_KEY = "window_geometry_qt"
 
-    def __init__(self, client: FrankfurterClient | None = None, settings: Settings | None = None):
+    def __init__(
+        self, client: FrankfurterClient | None = None, settings: Settings | None = None
+    ):
         super().__init__()
         self.setWindowTitle(self.TITLE)
         self._settings = settings or Settings()
@@ -119,7 +121,10 @@ class App(QMainWindow):
         try:
             geo = bytes(self.saveGeometry().toBase64()).decode("ascii")
             self._settings.update(
-                **{self.GEOMETRY_KEY: geo, "last_tab": self.TABS[self._tabs.currentIndex()][0]}
+                **{
+                    self.GEOMETRY_KEY: geo,
+                    "last_tab": self.TABS[self._tabs.currentIndex()][0],
+                }
             )
         except Exception:
             pass
@@ -187,10 +192,20 @@ class App(QMainWindow):
         tl = QHBoxLayout(title)
         tl.setContentsMargins(PAD_LG, 0, PAD_LG, 0)
         tl.setSpacing(PAD_MD)
-        tl.addWidget(make_label("⬡  FRANKFURTER", (FONT_HEADING[0], 18, "bold"), ACCENT_GOLD))
-        tl.addWidget(make_label("Exchange Rates & Currency Analytics", FONT_BODY, TEXT_MUTED))
+        tl.addWidget(
+            make_label("⬡  FRANKFURTER", (FONT_HEADING[0], 18, "bold"), ACCENT_GOLD)
+        )
+        tl.addWidget(
+            make_label("Exchange Rates & Currency Analytics", FONT_BODY, TEXT_MUTED)
+        )
         tl.addStretch(1)
-        tl.addWidget(make_label("Source: European Central Bank  •  api.frankfurter.dev", FONT_SMALL, TEXT_DIM))
+        tl.addWidget(
+            make_label(
+                "Source: European Central Bank  •  api.frankfurter.dev",
+                FONT_SMALL,
+                TEXT_DIM,
+            )
+        )
         lay.addWidget(title)
 
         self._tabs = QTabWidget()
@@ -282,8 +297,12 @@ class App(QMainWindow):
         except Exception as e:
             # Never leave a silently blank tab: show the error and allow a retry
             traceback.print_exc()
-            err = make_label(f"⚠  This tab failed to load:\n{e}", FONT_BODY, ACCENT_RED,
-                             align=Qt.AlignmentFlag.AlignCenter)
+            err = make_label(
+                f"⚠  This tab failed to load:\n{e}",
+                FONT_BODY,
+                ACCENT_RED,
+                align=Qt.AlignmentFlag.AlignCenter,
+            )
             pl.addWidget(err)
             self._statusbar.set_status(f"Tab failed to load: {e}", "error")
             return

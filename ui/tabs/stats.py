@@ -96,7 +96,9 @@ class StatsTab(BaseTab):
             self._status("Base and quote must be different currencies", "error")
             return
         if self._settings:
-            self._settings.update(stats_base=base, stats_quote=quote, stats_start=start, stats_end=end)
+            self._settings.update(
+                stats_base=base, stats_quote=quote, stats_start=start, stats_end=end
+            )
 
         def work():
             stats = self._client.get_volatility_stats(base, quote, start, end)

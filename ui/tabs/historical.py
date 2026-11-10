@@ -46,14 +46,30 @@ class HistoricalTab(BaseTab):
         sb.separator()
         sb.caption("Quick Jump")
         this_year = date.today().year
-        sb.add(ChipGrid([
-            (str(yr), lambda y=yr: self._jump_year(y))
-            for yr in range(this_year, this_year - 12, -1)
-        ]))
+        sb.add(
+            ChipGrid(
+                [
+                    (str(yr), lambda y=yr: self._jump_year(y))
+                    for yr in range(this_year, this_year - 12, -1)
+                ]
+            )
+        )
 
         sb.separator()
-        sb.add(make_button("⬇  CSV", lambda: self._export_csv_data(self._last, "historical"), "secondary"))
-        sb.add(make_button("⬇  JSON", lambda: self._export_json_data(self._last, "historical"), "secondary"))
+        sb.add(
+            make_button(
+                "⬇  CSV",
+                lambda: self._export_csv_data(self._last, "historical"),
+                "secondary",
+            )
+        )
+        sb.add(
+            make_button(
+                "⬇  JSON",
+                lambda: self._export_json_data(self._last, "historical"),
+                "secondary",
+            )
+        )
 
         main = self._split(sb)
         cards = QWidget()
@@ -125,7 +141,8 @@ class HistoricalTab(BaseTab):
             self._c_cnt.set_value(str(len(rates)))
             self._table.populate(rates, self._names, actual_base)
             self._status(
-                f"Historical  •  {actual_base}  •  {actual_date}  •  {len(rates)} pairs", "ok"
+                f"Historical  •  {actual_base}  •  {actual_date}  •  {len(rates)} pairs",
+                "ok",
             )
 
         self._run(work, done, skeleton=self._skeleton)

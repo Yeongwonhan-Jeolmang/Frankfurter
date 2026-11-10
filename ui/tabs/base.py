@@ -9,22 +9,29 @@ from datetime import date, timedelta
 
 from PyQt6 import sip
 from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import QFileDialog, QFrame, QHBoxLayout, QScrollArea, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import (
+    QFileDialog,
+    QFrame,
+    QHBoxLayout,
+    QScrollArea,
+    QVBoxLayout,
+    QWidget,
+)
 
 from exports.exporter import default_filename, export_to_csv, export_to_json
 from ui.theme import *
-from ui.widgets import ChipGrid, MIN_DATE
+from ui.widgets import MIN_DATE, ChipGrid
 from utils.workers import AsyncWorker
 
 __all__ = [
-    "BaseTab",
     "MIN_DATE",
+    "BaseTab",
     "code_of",
     "parse_date",
-    "validate_range",
     "quick_range_chips",
     "saved_or",
     "scrollable",
+    "validate_range",
 ]
 
 
@@ -86,7 +93,9 @@ def quick_range_chips(start_entry, end_entry, fetch_fn, presets=None) -> ChipGri
         ("5Y", 1826, False),
         ("10Y", 3652, False),
     ]
-    return ChipGrid([(lbl, lambda d=days, y=ytd: _apply(d, y)) for lbl, days, ytd in presets])
+    return ChipGrid(
+        [(lbl, lambda d=days, y=ytd: _apply(d, y)) for lbl, days, ytd in presets]
+    )
 
 
 def scrollable(content: QWidget, min_w: int = 560, min_h: int = 520) -> QScrollArea:

@@ -41,7 +41,9 @@ class TimeSeriesTab(BaseTab):
         self._quote_e = CodeCombo(self._codes, saved_or(s, "ts_quote", "USD"))
         g.addWidget(Field("Base", self._base_e), 0, 0)
         g.addWidget(Field("Quote", self._quote_e), 1, 0)
-        swap = make_button("⇅", self._swap, "glyph", width=30, tooltip="Swap base and quote")
+        swap = make_button(
+            "⇅", self._swap, "glyph", width=30, tooltip="Swap base and quote"
+        )
         swap.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
         g.addWidget(swap, 0, 1, 2, 1)
         g.setColumnStretch(0, 1)
@@ -59,18 +61,45 @@ class TimeSeriesTab(BaseTab):
         self._pct = QCheckBox("% Change from Start")
         self._pct.toggled.connect(self._chart_pct)
         sb.add(self._pct)
-        sb.add(make_button("📈  Fetch & Plot", self._fetch), before=PAD_MD, after=PAD_SM)
+        sb.add(
+            make_button("📈  Fetch & Plot", self._fetch), before=PAD_MD, after=PAD_SM
+        )
 
         sb.separator()
         sb.caption("Quick Ranges")
-        sb.add(quick_range_chips(self._start_e, self._end_e, self._fetch, [
-            ("1M", 30, False), ("3M", 90, False), ("6M", 180, False), ("1Y", 365, False),
-            ("3Y", 1095, False), ("5Y", 1826, False), ("10Y", 3652, False), ("20Y", 7305, False),
-        ]))
+        sb.add(
+            quick_range_chips(
+                self._start_e,
+                self._end_e,
+                self._fetch,
+                [
+                    ("1M", 30, False),
+                    ("3M", 90, False),
+                    ("6M", 180, False),
+                    ("1Y", 365, False),
+                    ("3Y", 1095, False),
+                    ("5Y", 1826, False),
+                    ("10Y", 3652, False),
+                    ("20Y", 7305, False),
+                ],
+            )
+        )
 
         sb.separator()
-        sb.add(make_button("⬇  CSV", lambda: self._export_csv_data(self._last, "timeseries"), "secondary"))
-        sb.add(make_button("⬇  JSON", lambda: self._export_json_data(self._last, "timeseries"), "secondary"))
+        sb.add(
+            make_button(
+                "⬇  CSV",
+                lambda: self._export_csv_data(self._last, "timeseries"),
+                "secondary",
+            )
+        )
+        sb.add(
+            make_button(
+                "⬇  JSON",
+                lambda: self._export_json_data(self._last, "timeseries"),
+                "secondary",
+            )
+        )
 
         main = self._split(sb, margins=PAD_MD)
         self._chart = ChartPanel()
@@ -101,7 +130,9 @@ class TimeSeriesTab(BaseTab):
             return
         group = {"Weekly": "week", "Monthly": "month"}.get(self._group.get())
         if self._settings:
-            self._settings.update(ts_base=base, ts_quote=quote, ts_start=start, ts_end=end)
+            self._settings.update(
+                ts_base=base, ts_quote=quote, ts_start=start, ts_end=end
+            )
 
         def work():
             return self._client.get_time_series(start, end, base, [quote], group)
@@ -114,6 +145,8 @@ class TimeSeriesTab(BaseTab):
             self._chart.set_pct_mode(self._pct.isChecked())
             self._chart.plot_series(data, base, quote)
             n = len(data.get("rates", {}))
-            self._status(f"{base}/{quote}  •  {n} data points  •  {start} → {end}", "ok")
+            self._status(
+                f"{base}/{quote}  •  {n} data points  •  {start} → {end}", "ok"
+            )
 
         self._run(work, done, skeleton=self._skeleton)
