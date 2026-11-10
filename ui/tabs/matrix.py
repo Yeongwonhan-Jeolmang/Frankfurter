@@ -119,9 +119,7 @@ class MatrixTab(BaseTab):
                     QColor(
                         ACCENT_GOLD
                         if b == q
-                        else TEXT_PRIMARY
-                        if val is not None
-                        else TEXT_DIM
+                        else TEXT_PRIMARY if val is not None else TEXT_DIM
                     )
                 )
                 it.setToolTip(

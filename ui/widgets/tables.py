@@ -120,9 +120,11 @@ class RateModel(QAbstractTableModel):
         # filtering / sorting / pinning never wipes the indicators.
         if self._prev_base == base and self._prev:
             self._changes = {
-                c: ((r - self._prev[c]) / self._prev[c] * 100)
-                if self._prev.get(c)
-                else None
+                c: (
+                    ((r - self._prev[c]) / self._prev[c] * 100)
+                    if self._prev.get(c)
+                    else None
+                )
                 for c, r in rates.items()
             }
         else:
@@ -170,6 +172,7 @@ class RateModel(QAbstractTableModel):
             def keyf(c):
                 ch = self._changes.get(c)
                 return (ch is not None, ch if ch is not None else 0.0)
+
         else:
             keyf = lambda c: c
         codes.sort(key=keyf, reverse=self.sort_desc)

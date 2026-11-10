@@ -381,11 +381,7 @@ class SegmentedButton(QWidget):
             pos = (
                 "only"
                 if n == 1
-                else "first"
-                if i == 0
-                else "last"
-                if i == n - 1
-                else "mid"
+                else "first" if i == 0 else "last" if i == n - 1 else "mid"
             )
             b.setProperty("segment", pos)
             self._group.addButton(b)
