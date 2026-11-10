@@ -2,34 +2,45 @@
 Main application window — orchestrates all tabs and the status bar.
 """
 
-import sys
+from __future__ import annotations
 
-import customtkinter as ctk
+import traceback
 
-from ui.theme import *
-from ui.widgets import StatusBar
-from ui.tabs import (
-    DashboardTab,
-    HistoricalTab,
-    TimeSeriesTab,
-    ConverterTab,
-    CompareTab,
-    StatsTab,
-    HeatmapTab,
-    MatrixTab,
-    WatchlistTab,
-    CurrencyDetailTab,
-    ProvidersTab,
+from PyQt6.QtCore import QByteArray, Qt
+from PyQt6.QtGui import QKeySequence, QShortcut
+from PyQt6.QtWidgets import (
+    QApplication,
+    QFrame,
+    QHBoxLayout,
+    QMainWindow,
+    QPlainTextEdit,
+    QTabWidget,
+    QVBoxLayout,
+    QWidget,
 )
+
 from api.client import FrankfurterClient
-from utils.workers import AsyncWorker
+from ui.tabs import (
+    CompareTab,
+    ConverterTab,
+    CurrencyDetailTab,
+    DashboardTab,
+    HeatmapTab,
+    HistoricalTab,
+    MatrixTab,
+    ProvidersTab,
+    StatsTab,
+    TimeSeriesTab,
+    WatchlistTab,
+)
+from ui.theme import *
+from ui.widgets import SpinnerLabel, StatusBar, make_label
+from utils import workers
 from utils.settings import Settings
-
-ctk.set_appearance_mode("dark")
-ctk.set_default_color_theme("dark-blue")
+from utils.workers import AsyncWorker
 
 
-class App(ctk.CTk):
+class App(QMainWindow):
     """Root window."""
 
     TITLE = "Frankfurter — Currency Intelligence"
@@ -68,239 +79,201 @@ class App(ctk.CTk):
         ("🏦  Providers", ProvidersTab),
     ]
 
-    def __init__(self):
+    # Settings key for Qt's own geometry blob (the Tk "WxH+X+Y" string under
+    # "window_geometry" is left alone so switching back still works)
+    GEOMETRY_KEY = "window_geometry_qt"
+
+    def __init__(self, client: FrankfurterClient | None = None, settings: Settings | None = None):
         super().__init__()
-        self.title(self.TITLE)
-        self._settings = Settings()
-        # Restore the last window size/position (validated, falls back to default)
-        geo = self._settings.get("window_geometry")
-        self.geometry(
-            geo if isinstance(geo, str) and "x" in geo else f"{self.W}x{self.H}"
-        )
-        self.minsize(900, 620)
-        self.configure(fg_color=BG_DARK)
-
-        self._client = FrankfurterClient()
+        self.setWindowTitle(self.TITLE)
+        self._settings = settings or Settings()
+        self._client = client or FrankfurterClient()
         self._currency_names: dict[str, str] = {}
-        # Map label → built tab widget (for keyboard-shortcut Enter dispatch)
-        self._built_tab_widgets: dict[str, object] = {}
+        self._load_failed = False
+        self._ready = False
+        self._pages: list[QWidget] = []
+        self._built: dict[int, QWidget] = {}
 
-        self.protocol("WM_DELETE_WINDOW", self._on_close)
+        self.setMinimumSize(900, 620)
+        self._restore_geometry()
         self._build_skeleton()
-        self._load_currencies()
         self._bind_shortcuts()
+        self._load_currencies()
 
-    def _on_close(self):
+    # ------------------------------------------------------------------
+    # Window state
+    # ------------------------------------------------------------------
+
+    def _restore_geometry(self) -> None:
+        blob = self._settings.get(self.GEOMETRY_KEY)
+        ok = False
+        if isinstance(blob, str) and blob:
+            try:
+                ok = self.restoreGeometry(QByteArray.fromBase64(blob.encode("ascii")))
+            except Exception:
+                ok = False
+        if not ok:
+            self.resize(self.W, self.H)
+
+    def closeEvent(self, event):
         try:
-            # Persist window geometry and the active tab for next launch
-            if self.state() == "normal":
-                self._settings.update(
-                    window_geometry=self.geometry(), last_tab=self._tabview.get()
-                )
-            else:
-                self._settings.set("last_tab", self._tabview.get())
+            geo = bytes(self.saveGeometry().toBase64()).decode("ascii")
+            self._settings.update(
+                **{self.GEOMETRY_KEY: geo, "last_tab": self.TABS[self._tabs.currentIndex()][0]}
+            )
         except Exception:
             pass
-        self._client.close()
-        self.destroy()
-        sys.exit(0)
+        try:
+            self._client.close()
+        finally:
+            workers.shutdown()
+        super().closeEvent(event)
 
     # ------------------------------------------------------------------
     # Keyboard shortcuts
     # ------------------------------------------------------------------
 
-    def _bind_shortcuts(self):
-        # Ctrl+1 … Ctrl+9  — switch to tab by 1-based index (Ctrl+0 → tab 10)
-        for i in range(1, 10):
-            self.bind_all(
-                f"<Control-Key-{i}>",
-                lambda e, idx=i - 1: self._switch_tab(idx),
-            )
-        self.bind_all("<Control-Key-0>", lambda e: self._switch_tab(9))
-        # Ctrl+Tab / Ctrl+Shift+Tab — cycle through tabs
-        self.bind_all("<Control-Tab>", lambda e: self._cycle_tab(1))
-        self.bind_all("<Control-Shift-Tab>", lambda e: self._cycle_tab(-1))
-        self.bind_all("<Control-ISO_Left_Tab>", lambda e: self._cycle_tab(-1))
-        # Enter / F5 — trigger fetch on the active tab
-        self.bind_all("<Return>", self._on_enter)
-        self.bind_all("<KP_Enter>", self._on_enter)
-        self.bind_all("<F5>", self._on_enter)
+    def _bind_shortcuts(self) -> None:
+        def sc(seq, fn):
+            s = QShortcut(QKeySequence(seq), self)
+            s.setContext(Qt.ShortcutContext.WindowShortcut)
+            s.activated.connect(fn)
+            return s
 
-    def _cycle_tab(self, step: int) -> str:
-        labels = [l for l, _ in self.TABS]
-        try:
-            idx = labels.index(self._tabview.get())
-        except ValueError:
-            idx = 0
-        self._switch_tab((idx + step) % len(labels))
-        return "break"  # stop Tk's default focus traversal
+        # Ctrl+1 … Ctrl+9 switch to tab N; Ctrl+0 → tab 10
+        for i in range(1, 10):
+            sc(f"Ctrl+{i}", lambda idx=i - 1: self._switch_tab(idx))
+        sc("Ctrl+0", lambda: self._switch_tab(9))
+        # Ctrl+Tab / Ctrl+Shift+Tab cycle through tabs
+        sc("Ctrl+Tab", lambda: self._cycle_tab(1))
+        sc("Ctrl+Shift+Tab", lambda: self._cycle_tab(-1))
+        sc("Ctrl+Backtab", lambda: self._cycle_tab(-1))
+        # Enter / F5 trigger a fetch on the active tab
+        for key in ("Return", "Enter", "F5"):
+            sc(key, self._on_enter)
+
+    def _cycle_tab(self, step: int) -> None:
+        self._switch_tab((self._tabs.currentIndex() + step) % len(self.TABS))
 
     def _switch_tab(self, idx: int) -> None:
-        if idx < len(self.TABS):
-            label = self.TABS[idx][0]
-            try:
-                self._tabview.set(label)
-                # Tabs are only constructible once the currency list is in;
-                # before that, _build_tabs builds whichever tab is selected.
-                if hasattr(self, "_tab_classes"):
-                    self._build_tab(label)
-            except Exception:
-                pass
+        if 0 <= idx < len(self.TABS):
+            self._tabs.setCurrentIndex(idx)  # builds it via currentChanged
 
-    def _on_enter(self, event=None) -> None:
-        """Delegate Enter to the active tab's _fetch method if it exists."""
-        # Don't hijack Enter inside multi-line text boxes
-        # (event.widget can be a plain string for Tk-internal widgets such as
-        # combobox drop-down menus, so don't assume it has winfo_class)
-        widget = getattr(event, "widget", None)
-        try:
-            if widget is not None and widget.winfo_class() == "Text":
-                return
-        except AttributeError:
-            return
-        try:
-            label = self._tabview.get()
-            widget = self._built_tab_widgets.get(label)
-            if widget and hasattr(widget, "_fetch"):
-                widget._fetch()
-        except Exception:
-            pass
+    def _on_enter(self) -> None:
+        """Delegate Enter / F5 to the active tab's ``_fetch``."""
+        if isinstance(QApplication.focusWidget(), QPlainTextEdit):
+            return  # don't hijack Enter inside multi-line text boxes
+        tab = self._built.get(self._tabs.currentIndex())
+        if tab is not None and hasattr(tab, "_fetch"):
+            try:
+                tab._fetch()
+            except Exception as e:
+                traceback.print_exc()
+                self._statusbar.set_status(f"Error: {e}", "error")
 
     # ------------------------------------------------------------------
     # Layout skeleton
     # ------------------------------------------------------------------
 
-    def _build_skeleton(self):
-        titlebar = ctk.CTkFrame(self, fg_color=BG_CARD, height=56, corner_radius=0)
-        titlebar.pack(fill="x", side="top")
+    def _build_skeleton(self) -> None:
+        central = QWidget()
+        lay = QVBoxLayout(central)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
 
-        ctk.CTkLabel(
-            titlebar,
-            text="  ⬡  FRANKFURTER",
-            font=("Georgia", 18, "bold"),
-            text_color=ACCENT_GOLD,
-        ).pack(side="left", padx=PAD_LG, pady=PAD_MD)
+        title = QFrame()
+        title.setObjectName("TitleBar")
+        title.setFixedHeight(56)
+        tl = QHBoxLayout(title)
+        tl.setContentsMargins(PAD_LG, 0, PAD_LG, 0)
+        tl.setSpacing(PAD_MD)
+        tl.addWidget(make_label("⬡  FRANKFURTER", (FONT_HEADING[0], 18, "bold"), ACCENT_GOLD))
+        tl.addWidget(make_label("Exchange Rates & Currency Analytics", FONT_BODY, TEXT_MUTED))
+        tl.addStretch(1)
+        tl.addWidget(make_label("Source: European Central Bank  •  api.frankfurter.dev", FONT_SMALL, TEXT_DIM))
+        lay.addWidget(title)
 
-        ctk.CTkLabel(
-            titlebar,
-            text="Exchange Rates & Currency Analytics",
-            font=FONT_BODY,
-            text_color=TEXT_MUTED,
-        ).pack(side="left", pady=PAD_MD)
+        self._tabs = QTabWidget()
+        self._tabs.setDocumentMode(True)
+        self._tabs.setUsesScrollButtons(True)
+        self._tabs.tabBar().setExpanding(False)
+        self._tabs.tabBar().setCursor(Qt.CursorShape.PointingHandCursor)
+        for i, (label, _cls) in enumerate(self.TABS):
+            page = QWidget()
+            pl = QVBoxLayout(page)
+            pl.setContentsMargins(0, 0, 0, 0)
+            self._pages.append(page)
+            self._tabs.addTab(page, label)
+            hint = f"Ctrl+{i + 1}" if i < 9 else ("Ctrl+0" if i == 9 else "")
+            if hint:
+                self._tabs.setTabToolTip(i, hint)
+        lay.addWidget(self._tabs, 1)
 
-        ctk.CTkLabel(
-            titlebar,
-            text="Source: European Central Bank  •  api.frankfurter.dev",
-            font=FONT_SMALL,
-            text_color=TEXT_DIM,
-        ).pack(side="right", padx=PAD_LG)
-
-        self._statusbar = StatusBar(self)
-        self._statusbar.pack(fill="x", side="bottom")
-
-        self._tabview = ctk.CTkTabview(
-            self,
-            fg_color=BG_DARK,
-            segmented_button_fg_color=BG_CARD,
-            segmented_button_selected_color=ACCENT_GOLD,
-            segmented_button_selected_hover_color="#B8960C",
-            segmented_button_unselected_color=BG_CARD,
-            segmented_button_unselected_hover_color=BG_HOVER,
-            text_color=TEXT_PRIMARY,
-            text_color_disabled=TEXT_DIM,
-            border_width=0,
-            corner_radius=0,
-        )
-        self._tabview.pack(fill="both", expand=True)
-
-        self._tab_frames: dict[str, ctk.CTkFrame] = {}
-        for label, _ in self.TABS:
-            tab = self._tabview.add(label)
-            tab.configure(fg_color=BG_DARK)
-            self._tab_frames[label] = tab
+        self._statusbar = StatusBar()
+        lay.addWidget(self._statusbar)
+        self.setCentralWidget(central)
 
         # Re-open the tab that was active when the app was last closed
+        labels = [l for l, _ in self.TABS]
         last = self._settings.get("last_tab")
-        if last in self._tab_frames:
-            self._tabview.set(last)
+        if last in labels:
+            self._tabs.setCurrentIndex(labels.index(last))
 
-        self._loading_lbl = ctk.CTkLabel(
-            self._tab_frames[self._tabview.get()],
-            text="⠋  Loading currencies from api.frankfurter.dev…",
-            font=FONT_HEADING,
-            text_color=ACCENT_GOLD,
-        )
-        self._loading_lbl.pack(expand=True)
-        self._spin_idx = 0
-        self._spin_loading()
-
-    def _spin_loading(self) -> None:
-        """Animate the braille spinner while the currency list loads."""
-        frames = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
-        try:
-            if not self._loading_lbl.winfo_exists():
-                return
-        except Exception:
-            return
-        self._spin_idx = (self._spin_idx + 1) % len(frames)
-        self._loading_lbl.configure(
-            text=f"{frames[self._spin_idx]}  Loading currencies from api.frankfurter.dev…"
-        )
-        self.after(90, self._spin_loading)
+        self._loading_lbl = SpinnerLabel("Loading currencies from api.frankfurter.dev…")
+        self._pages[self._tabs.currentIndex()].layout().addWidget(self._loading_lbl)
+        self._tabs.currentChanged.connect(self._on_tab_change)
 
     # ------------------------------------------------------------------
     # Currency bootstrap
     # ------------------------------------------------------------------
 
-    def _load_currencies(self):
+    def _load_currencies(self) -> None:
         self._statusbar.set_status("Loading currency list…", "loading")
-
-        def work():
-            return self._client.get_currencies()
 
         def done(data, err):
             self._load_failed = bool(err or not data)
             if self._load_failed:
                 self._statusbar.set_status(
-                    f"Failed to load currencies (offline?): {err or 'empty list'}  •  using a built-in fallback list",
+                    f"Failed to load currencies (offline?): {err or 'empty list'}"
+                    "  •  using a built-in fallback list",
                     "error",
                 )
                 self._currency_names = dict(self.FALLBACK_CURRENCIES)
             else:
                 self._currency_names = data
+            self._loading_lbl.deleteLater()
+            self._loading_lbl = None
+            self._ready = True
+            self._build_tab(self._tabs.currentIndex())
+            if not self._load_failed:
+                self._statusbar.set_status(
+                    f"Ready  •  {len(self._currency_names)} currencies loaded  •  "
+                    "Ctrl+1…9 switch tabs, Enter/F5 fetch",
+                    "ok",
+                )
 
-            self._loading_lbl.destroy()
-            self._build_tabs()
+        AsyncWorker(self._client.get_currencies, done).start()
 
-        AsyncWorker(work, done, root=self).start()
+    def _on_tab_change(self, idx: int) -> None:
+        if self._ready:
+            self._build_tab(idx)
+        elif self._loading_lbl is not None:
+            # Keep the spinner on whichever tab is showing
+            self._pages[idx].layout().addWidget(self._loading_lbl)
 
-    def _build_tabs(self):
-        self._tab_classes: dict[str, type] = {label: cls for label, cls in self.TABS}
-        self._built_tabs: set[str] = set()
-
-        # Build whichever tab is showing (the user may have switched with a
-        # shortcut while the list was loading, or we restored the last tab)
-        self._build_tab(self._tabview.get())
-        self._tabview.configure(command=self._on_tab_change)
-
-        if not getattr(self, "_load_failed", False):
-            self._statusbar.set_status(
-                f"Ready  •  {len(self._currency_names)} currencies loaded  •  "
-                "Ctrl+1…9 switch tabs, Enter/F5 fetch",
-                "ok",
-            )
-
-    def _build_tab(self, label: str):
-        if label in self._built_tabs:
+    def _build_tab(self, idx: int) -> None:
+        """Tabs are built lazily, the first time they're shown."""
+        if idx in self._built or not (0 <= idx < len(self.TABS)):
             return
-        self._built_tabs.add(label)
-        TabClass = self._tab_classes[label]
-        parent = self._tab_frames[label]
-        for w in parent.winfo_children():  # e.g. an error label from a failed try
-            w.destroy()
+        label, cls = self.TABS[idx]
+        page = self._pages[idx]
+        pl = page.layout()
+        while pl.count():  # e.g. an error label from a failed attempt
+            w = pl.takeAt(0).widget()
+            if w is not None:
+                w.deleteLater()
         try:
-            tab_widget = TabClass(
-                parent,
+            tab = cls(
                 client=self._client,
                 currency_names=self._currency_names,
                 status_cb=self._statusbar.set_status,
@@ -308,23 +281,23 @@ class App(ctk.CTk):
             )
         except Exception as e:
             # Never leave a silently blank tab: show the error and allow a retry
-            import traceback
-
             traceback.print_exc()
-            self._built_tabs.discard(label)
-            for w in parent.winfo_children():
-                w.destroy()
-            ctk.CTkLabel(
-                parent,
-                text=f"⚠  This tab failed to load:\n{e}",
-                font=FONT_BODY,
-                text_color=ACCENT_RED,
-            ).pack(expand=True)
+            err = make_label(f"⚠  This tab failed to load:\n{e}", FONT_BODY, ACCENT_RED,
+                             align=Qt.AlignmentFlag.AlignCenter)
+            pl.addWidget(err)
             self._statusbar.set_status(f"Tab failed to load: {e}", "error")
             return
-        tab_widget.pack(fill="both", expand=True)
-        self._built_tab_widgets[label] = tab_widget
+        pl.addWidget(tab)
+        self._built[idx] = tab
 
-    def _on_tab_change(self):
-        label = self._tabview.get()
-        self._build_tab(label)
+    # Handy for tests / scripting
+    def tab_widget(self, idx: int) -> QWidget | None:
+        return self._built.get(idx)
+
+    @property
+    def tabs(self) -> QTabWidget:
+        return self._tabs
+
+    @property
+    def statusbar(self) -> StatusBar:
+        return self._statusbar

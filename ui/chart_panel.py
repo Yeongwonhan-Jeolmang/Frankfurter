@@ -1,23 +1,36 @@
 """
 ChartPanel — embedded matplotlib with 8 chart types. (Worked on by Anna Zieleman and Simon Roberge)
+Ported to PyQt6: the figure lives in a ``FigureCanvasQTAgg`` with matplotlib's
+Qt navigation toolbar; all drawing code is unchanged from the Tk version.
 """
 
 from __future__ import annotations
 
-import customtkinter as ctk
 import matplotlib
 
-matplotlib.use("TkAgg")
+matplotlib.use("QtAgg")
 import matplotlib.dates as mdates
 import matplotlib.ticker as mticker
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg, NavigationToolbar2QT
 from matplotlib.figure import Figure
 from typing import Any
 import pandas as pd
 import numpy as np
 from datetime import datetime
 
+from PyQt6.QtCore import Qt
+from PyQt6.QtWidgets import (
+    QFileDialog,
+    QFrame,
+    QHBoxLayout,
+    QScrollArea,
+    QSizePolicy,
+    QVBoxLayout,
+    QWidget,
+)
+
 from ui.theme import *
+from ui.widgets.common import SegmentedButton, make_button, make_label
 
 
 def _style(ax) -> None:
@@ -44,7 +57,7 @@ def _month_end_rule() -> str:
 _MONTH_END = _month_end_rule()
 
 
-class ChartPanel(ctk.CTkFrame):
+class ChartPanel(QFrame):
     CHART_TYPES = [
         "Line",
         "Area",
@@ -58,8 +71,9 @@ class ChartPanel(ctk.CTkFrame):
     # Chart types that have a date x-axis and support the hover read-out
     _HOVERABLE = {"Line", "Area", "Bar", "Multi-Overlay", "Rolling Avg"}
 
-    def __init__(self, master, show_types: bool = True, **kw):
-        super().__init__(master, fg_color=BG_CARD, corner_radius=CORNER_RADIUS, **kw)
+    def __init__(self, show_types: bool = True, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setObjectName("ChartPanel")
         self._data: dict[str, Any] = {}
         self._base: str = "EUR"
         self._quote: str = "USD"
@@ -76,90 +90,51 @@ class ChartPanel(ctk.CTkFrame):
         self._hover_x: np.ndarray | None = None
         self._hover_series: list[tuple[str, tuple[np.ndarray, np.ndarray], str]] = []
         self._hover_artists: tuple = ()
-        self._build_toolbar()
-        self._build_figure()
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(PAD_MD, PAD_MD, PAD_MD, PAD_SM)
+        lay.setSpacing(PAD_SM)
+        self._build_toolbar(lay)
+        self._build_figure(lay)
 
-    def _build_toolbar(self) -> None:
-        bar = ctk.CTkFrame(self, fg_color="transparent")
-        bar.pack(fill="x", padx=PAD_MD, pady=(PAD_MD, 0))
-        self._seg = ctk.CTkSegmentedButton(
-            bar,
-            values=self.CHART_TYPES,
-            font=FONT_SMALL,
-            fg_color=BG_INPUT,
-            selected_color=ACCENT_GOLD,
-            selected_hover_color="#B8960C",
-            unselected_color=BG_INPUT,
-            unselected_hover_color=BG_HOVER,
-            text_color=TEXT_PRIMARY,
-            command=lambda _: self._render(),
-        )
-        self._seg.set("Line")
+    def _build_toolbar(self, lay: QVBoxLayout) -> None:
+        bar = QHBoxLayout()
+        bar.setSpacing(PAD_MD)
+        self._seg = SegmentedButton(self.CHART_TYPES, "Line", command=lambda _v: self._render())
         if self._show_types:
-            ctk.CTkLabel(
-                bar, text="Chart:", font=FONT_LABEL, text_color=TEXT_MUTED
-            ).pack(side="left")
-            self._seg.pack(side="left", padx=PAD_MD)
-        ctk.CTkButton(
-            bar,
-            text="💾 Save",
-            width=80,
-            height=26,
-            fg_color=BG_INPUT,
-            hover_color=BG_HOVER,
-            border_color=BORDER_COLOR,
-            border_width=1,
-            text_color=TEXT_PRIMARY,
-            font=FONT_SMALL,
-            command=self._save,
-        ).pack(side="right")
+            bar.addWidget(make_label("Chart:", FONT_LABEL, TEXT_MUTED))
+            # Scrolls sideways instead of forcing a wide minimum window size
+            sc = QScrollArea()
+            sc.setWidget(self._seg)
+            sc.setWidgetResizable(False)
+            sc.setFrameShape(QFrame.Shape.NoFrame)
+            sc.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            sc.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+            sc.setFixedHeight(self._seg.sizeHint().height() + 12)
+            sc.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            sc.viewport().setAutoFillBackground(False)
+            bar.addWidget(sc, 1)
+        else:
+            self._seg.hide()
+            bar.addStretch(1)
+        self._save_btn = make_button("💾 Save", self._save, "outline", width=84, height=28)
+        bar.addWidget(self._save_btn, 0, Qt.AlignmentFlag.AlignTop)
+        lay.addLayout(bar)
 
-    def _build_figure(self) -> None:
+    def _build_figure(self, lay: QVBoxLayout) -> None:
         self._fig = Figure(figsize=(8, 4), dpi=96, constrained_layout=True)
         self._fig.set_facecolor(BG_CARD)
         self._ax = self._fig.add_subplot(111)
         _style(self._ax)
-        self._mpl_canvas: FigureCanvasTkAgg = FigureCanvasTkAgg(self._fig, master=self)
-        self._mpl_canvas.get_tk_widget().configure(bg=BG_CARD, highlightthickness=0)
-        self._mpl_canvas.get_tk_widget().pack(
-            fill="both", expand=True, padx=PAD_MD, pady=PAD_SM
-        )
-        tf = ctk.CTkFrame(self, fg_color=BG_CARD, height=28)
-        tf.pack(fill="x", padx=PAD_MD, pady=(0, PAD_SM))
-        nav = NavigationToolbar2Tk(self._mpl_canvas, tf, pack_toolbar=False)
-        try:
-            nav.config(background=BG_CARD)
-            for ch in nav.winfo_children():
-                for opts in (
-                    # buttons / checkbuttons: dark background, light glyphs
-                    dict(
-                        background=BG_CARD,
-                        foreground=TEXT_PRIMARY,
-                        activebackground=BG_HOVER,
-                        activeforeground=TEXT_PRIMARY,
-                        highlightthickness=0,
-                        borderwidth=0,
-                        selectcolor=BG_SELECTED,
-                    ),
-                    dict(background=BG_CARD, foreground=TEXT_MUTED),
-                    dict(background=BG_CARD),
-                ):
-                    try:
-                        # Children are mixed widget types, so options are
-                        # passed as Tk's ``cnf`` dict; unsupported sets raise
-                        # TclError and the next (smaller) set is tried.
-                        ch.configure(opts)
-                        break
-                    except Exception:
-                        continue
-            # matplotlib picks light or dark icon variants from the button
-            # colours; re-run that now that the buttons are dark so the icons
-            # are visible instead of black-on-black.
-            nav._rescale()
-        except Exception:
-            pass
-        nav.update()
-        nav.pack(side="left", fill="x")
+        self._mpl_canvas = FigureCanvasQTAgg(self._fig)
+        self._mpl_canvas.setStyleSheet(f"background: {BG_CARD};")
+        self._mpl_canvas.setMinimumSize(240, 160)
+        self._mpl_canvas.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        lay.addWidget(self._mpl_canvas, 1)
+        # The toolbar picks light icons automatically from the dark palette
+        nav = NavigationToolbar2QT(self._mpl_canvas, self, coordinates=True)
+        nav.setIconSize(nav.iconSize() * 0.8)
+        self._nav = nav
+        lay.addWidget(nav)
         self._mpl_canvas.mpl_connect("motion_notify_event", self._on_hover)
         self._mpl_canvas.mpl_connect("axes_leave_event", self._on_leave)
         self._draw_placeholder()
@@ -728,20 +703,19 @@ class ChartPanel(ctk.CTkFrame):
             self._mpl_canvas.draw_idle()
 
     def _save(self) -> None:
-        from tkinter import filedialog
-
         name = (
             f"{self._base}_{self._quote}_chart"
             if self._mode != "matrix"
             else "cross_rate_matrix"
         )
-        p = filedialog.asksaveasfilename(
-            defaultextension=".png",
-            filetypes=[("PNG", "*.png"), ("SVG", "*.svg"), ("PDF", "*.pdf")],
-            initialfile=f"{name}.png",
-            title="Save chart",
+        filters = {"PNG (*.png)": ".png", "SVG (*.svg)": ".svg", "PDF (*.pdf)": ".pdf"}
+        p, chosen = QFileDialog.getSaveFileName(
+            self, "Save chart", f"{name}.png", ";;".join(filters)
         )
-        if p:
-            # Hide the hover read-out so it doesn't end up in the export
-            self._on_leave(None)
-            self._fig.savefig(p, dpi=150, bbox_inches="tight", facecolor=BG_CARD)
+        if not p:
+            return
+        if not p.lower().endswith((".png", ".svg", ".pdf")):
+            p += filters.get(chosen, ".png")
+        # Hide the hover read-out so it doesn't end up in the export
+        self._on_leave(None)
+        self._fig.savefig(p, dpi=150, bbox_inches="tight", facecolor=BG_CARD)

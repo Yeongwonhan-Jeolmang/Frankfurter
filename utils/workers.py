@@ -1,77 +1,53 @@
 """
 Background worker that keeps the GUI responsive while fetching data.
 
-Tkinter is not thread-safe: calling *any* widget method (including
-``after()``) from a worker thread can raise ``RuntimeError: main thread is
-not in main loop`` or silently corrupt state on non-threaded Tcl builds.
-Results are therefore pushed onto a thread-safe queue that a single
-``after()`` loop running on the GUI thread drains and dispatches.
+Qt widgets must only be touched from the GUI thread. Work runs on a shared
+``ThreadPoolExecutor``; the result is handed back through a Qt signal on a
+``QObject`` that lives in the GUI thread. Because the signal is emitted from
+a different thread, Qt automatically queues it and the callback runs on the
+GUI thread's event loop (no polling timer needed, unlike the Tk version).
 """
 
-import queue
-import threading
-import tkinter as tk
+from __future__ import annotations
+
+import traceback
 from concurrent.futures import ThreadPoolExecutor
-from typing import Callable, Any
+from typing import Any, Callable
+
+from PyQt6.QtCore import QCoreApplication, QObject, pyqtSignal, pyqtSlot
 
 # One shared, bounded pool instead of a brand-new thread per request.
 _POOL = ThreadPoolExecutor(max_workers=8, thread_name_prefix="frankfurter-io")
 
 
-class _Dispatcher:
-    """Drains worker results on the Tk main thread."""
+class _Dispatcher(QObject):
+    """Lives on the GUI thread; delivers worker results there."""
 
-    POLL_MS = 15
+    deliver = pyqtSignal(object, object, object)
 
-    _instances: dict[int, "_Dispatcher"] = {}
-    _lock = threading.Lock()
+    _instance: "_Dispatcher | None" = None
 
-    def __init__(self, root: tk.Misc):
-        self._root = root
-        self._q: "queue.SimpleQueue[tuple[Callable, Any, Any]]" = queue.SimpleQueue()
-        self._alive = True
-        self._root.after(self.POLL_MS, self._poll)
+    def __init__(self):
+        super().__init__()
+        self.deliver.connect(self._dispatch)
 
     @classmethod
-    def for_root(cls, root: tk.Misc) -> "_Dispatcher":
-        # Must be called from the GUI thread (AsyncWorker.start does so).
-        key = id(root)
-        with cls._lock:
-            d = cls._instances.get(key)
-            if d is None or not d._alive:
-                d = cls(root)
-                cls._instances[key] = d
-            return d
+    def instance(cls) -> "_Dispatcher":
+        # Created lazily on first use, which always happens on the GUI thread
+        # (AsyncWorker.start is only ever called from GUI code).
+        if cls._instance is None:
+            cls._instance = cls()
+            app = QCoreApplication.instance()
+            if app is not None:
+                cls._instance.moveToThread(app.thread())
+        return cls._instance
 
-    def post(self, callback, result, exc) -> None:
-        """Thread-safe: may be called from any thread."""
-        self._q.put((callback, result, exc))
-
-    def _poll(self) -> None:
+    @pyqtSlot(object, object, object)
+    def _dispatch(self, callback, result, exc) -> None:
         try:
-            while True:
-                cb, result, exc = self._q.get_nowait()
-                try:
-                    cb(result, exc)
-                except Exception as e:  # never let one bad callback kill the loop
-                    # report_callback_exception lives on tk.Tk, not tk.Misc
-                    handler = getattr(self._root, "report_callback_exception", None)
-                    if handler is not None:
-                        try:
-                            handler(type(e), e, e.__traceback__)
-                        except Exception:
-                            pass
-                    else:
-                        import traceback
-
-                        traceback.print_exception(type(e), e, e.__traceback__)
-        except queue.Empty:
-            pass
-        try:
-            self._root.after(self.POLL_MS, self._poll)
-        except (tk.TclError, RuntimeError):
-            # Root destroyed — stop polling and drop pending callbacks.
-            self._alive = False
+            callback(result, exc)
+        except Exception:  # never let one bad callback take the app down
+            traceback.print_exc()
 
 
 class AsyncWorker:
@@ -90,37 +66,44 @@ class AsyncWorker:
             else:
                 update_table(result)
 
-        AsyncWorker(fetch, on_done, root=widget.winfo_toplevel()).start()
+        AsyncWorker(fetch, on_done).start()
+
+    ``root`` is accepted (and ignored) for compatibility with the old Tk API.
+    Pass ``gui_thread=False`` to receive the callback on the worker thread.
     """
 
     def __init__(
         self,
         worker_fn: Callable[[], Any],
         callback: Callable[[Any, Exception | None], None],
-        root: tk.Misc | None = None,
+        root: Any = None,
+        gui_thread: bool = True,
     ):
         self._worker_fn = worker_fn
         self._callback = callback
-        self._root = root
-        self._dispatcher: _Dispatcher | None = None
+        self._dispatcher = _Dispatcher.instance() if gui_thread else None
 
     def start(self):
-        if self._root is not None:
-            # Created on the GUI thread, before the work is submitted.
-            self._dispatcher = _Dispatcher.for_root(self._root)
         return _POOL.submit(self._run)
 
     def _run(self):
         try:
             result = self._worker_fn()
-            self._schedule(result, None)
         except Exception as exc:
-            self._schedule(None, exc)
+            self._deliver(None, exc)
+        else:
+            self._deliver(result, None)
 
-    def _schedule(self, result, exc):
-        """Deliver the callback on the Tkinter main thread if a root is known."""
+    def _deliver(self, result, exc):
         if self._dispatcher is not None:
-            self._dispatcher.post(self._callback, result, exc)
+            try:
+                self._dispatcher.deliver.emit(self._callback, result, exc)
+            except RuntimeError:
+                pass  # application already shut down
             return
-        # No root given: caller opted into a direct (worker-thread) callback.
         self._callback(result, exc)
+
+
+def shutdown() -> None:
+    """Stop accepting work; don't block on in-flight HTTP requests."""
+    _POOL.shutdown(wait=False, cancel_futures=True)

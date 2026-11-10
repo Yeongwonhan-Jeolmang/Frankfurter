@@ -75,6 +75,24 @@ Line · Area · Bar (directional green/red) · Multi-Currency Overlay · Histogr
 
 **Bug fixes:** ★ clicks could toggle a pin several times (bindings stacked up on every re-render); the Change column was wiped whenever you filtered or pinned; the Matrix colour bar was duplicated on every rebuild, shrinking the chart; switching chart type on the Heatmap/Matrix tabs erased the chart; quick-range and year buttons overflowed the sidebar and were unclickable; a cleared watchlist came back after restart; Compare's filter scrambled the list order; a slow old response could overwrite a newer one; `Refresh` served cached data; Currency Detail charted EUR against itself; Enter did nothing on the Converter tab; a tab that failed to build stayed blank silently; settings writes were not atomic.
 
+### New in the PyQt6 port
+
+The whole GUI now runs on **PyQt6** instead of customtkinter. Every tab, shortcut and feature from 1.1 is still there; the look (dark theme, gold accents) is carried over through a Qt style sheet.
+
+| Change | Details |
+|--------|---------|
+| **Qt model/view tables** | Rate, watchlist, provider and matrix tables are real Qt tables; only visible rows are painted, so refreshes are instant no matter how many currencies |
+| **Built-in calendar** | Date pickers use Qt's `QCalendarWidget` — `tkcalendar` is no longer needed |
+| **Cleaner threading** | Worker results reach the GUI through a queued Qt signal instead of a 15 ms polling loop |
+| **Resizable splits** | Matrix (chart ↔ table) and Watchlist (list ↔ chart) have a draggable divider |
+| **Small windows** | Sidebars and main areas scroll instead of clipping; stat-card values shrink to fit narrow cards (full value in the tooltip) |
+| **Checklists** | Compare / Matrix currency lists are one `QListWidget`; clicking anywhere on a row toggles it |
+| **Heatmap years** | Year fields are spin boxes limited to 1948 – this year (scroll or ↑/↓) |
+| **Modular code** | `ui/tabs/` has one module per tab; `ui/widgets/` is split by purpose |
+| **Fewer dependencies** | `customtkinter`, `tkcalendar` and `Pillow` are gone; a Tk-enabled Python is no longer required |
+
+> The saved window position now uses Qt's own format (`window_geometry_qt`), so the window opens at the default size once after upgrading. All other saved settings carry over unchanged.
+
 ### Export
 - **CSV and JSON** on every data tab (Dashboard, Historical, Time Series, Heatmap, Matrix)
 - **PNG, SVG or PDF** chart export via the 💾 Save button on any chart panel
@@ -99,16 +117,16 @@ python main.py
 
 ### NixOS
 
-The app requires a Tk-capable Python build and GCC's `libstdc++` for the numpy/matplotlib wheels. Use the provided launcher:
+PyQt6 wheels from pip expect system libraries that NixOS doesn't expose at the usual paths, so the simplest route is to let Nix provide the Python packages:
 
 ```bash
-nix-shell -p python3Full gcc --run 'bash run.sh'
+nix-shell -p 'python3.withPackages (ps: [ ps.pyqt6 ps.matplotlib ps.pandas ps.httpx ])' --run 'bash run.sh'
 ```
 
-`run.sh` automatically:
-1. Locates `libstdc++.so.6` via `gcc -print-file-name` and injects it into `LD_LIBRARY_PATH`
-2. Creates a `.venv/` on first run and pip-installs all dependencies
-3. Launches `main.py` using the venv Python
+`run.sh`:
+1. Starts the app straight away if PyQt6 & co. are already importable (the command above)
+2. Otherwise locates `libstdc++.so.6` via `gcc`, creates a `.venv/` on first run and pip-installs `requirements.txt`
+3. Launches `main.py`
 
 ### Requirements
 
@@ -119,12 +137,10 @@ nix-shell -p python3Full gcc --run 'bash run.sh'
 
 | Package | Version | Purpose |
 |---------|---------|---------|
-| `customtkinter` | >= 5.2.0 | Modern dark-themed UI framework |
-| `matplotlib` | >= 3.7.0 | Charts and data visualisation |
+| `PyQt6` | >= 6.5 | GUI toolkit (widgets, tables, calendar, dialogs) |
+| `matplotlib` | >= 3.7.0 | Charts and data visualisation (Qt backend) |
 | `pandas` | >= 2.0.0 | Data wrangling for time series |
 | `httpx` | >= 0.27.0 | HTTP client with connection pooling |
-| `Pillow` | >= 10.0.0 | Image handling |
-| `tkcalendar` | >= 1.6.0 | Date picker widgets |
 
 ---
 
@@ -143,16 +159,25 @@ Frankfurter/
 │
 ├── ui/
 │   ├── __init__.py
-│   ├── app.py                  <- App (root CTk window, keyboard shortcuts, lazy tab orchestration)
-│   ├── theme.py                <- Colour palette, fonts, matplotlib style
-│   ├── widgets.py              <- StatCard, RateTable (★ pins, sorting), WatchlistPanel, DateEntry, SkeletonFrame, ...
+│   ├── app.py                  <- App (QMainWindow, keyboard shortcuts, lazy tab orchestration)
+│   ├── theme.py                <- Colour palette, fonts, dark QPalette, Qt style sheet, matplotlib style
 │   ├── chart_panel.py          <- ChartPanel (8 chart types, % change mode, hover read-out, export)
-│   └── tabs.py                 <- All 11 tab implementations
+│   ├── assets/                 <- Small SVG icons used by the style sheet (chevron, check mark, arrows)
+│   ├── widgets/
+│   │   ├── common.py           <- StatCard, SectionHeader, StatusBar, Sidebar, CodeCombo, SegmentedButton, ...
+│   │   ├── dates.py            <- DateEntry + calendar pop-up
+│   │   ├── tables.py           <- RateTable (★ pins, sorting) and WatchlistPanel (Qt model/view)
+│   │   ├── checklist.py        <- CurrencyChecklist (Compare / Matrix)
+│   │   └── loading.py          <- SkeletonOverlay, SpinnerLabel
+│   └── tabs/
+│       ├── base.py             <- BaseTab (async requests, validation, export) + shared helpers
+│       ├── dashboard.py  historical.py  timeseries.py  converter.py  compare.py  stats.py
+│       └── heatmap.py  matrix.py  watchlist.py  detail.py  providers.py
 │
 ├── utils/
 │   ├── __init__.py
 │   ├── settings.py             <- Settings (persistent JSON — favourites, currencies, date ranges)
-│   └── workers.py              <- AsyncWorker (thread pool + main-thread result queue)
+│   └── workers.py              <- AsyncWorker (thread pool + queued Qt signal back to the GUI thread)
 │
 └── exports/
     ├── __init__.py
@@ -194,7 +219,9 @@ All data is sourced from **`api.frankfurter.dev` (v2)** — no authentication re
 ## Architecture Notes
 
 - **Settings** is a single shared instance created in `App.__init__` and passed as a `settings=` kwarg to every tab. `BaseTab` stores it as `self._settings` — no global state.
-- **SkeletonFrame** uses `place(relx=0, rely=0, relwidth=1, relheight=1)` over a wrapper frame so it covers the content area exactly without disturbing the layout.
+- **SkeletonOverlay** is a child widget of the table / chart it covers; an event filter keeps it sized to its target, so it never disturbs the layout.
+- **Threading:** work runs on a shared `ThreadPoolExecutor`; `AsyncWorker` emits a Qt signal from the worker thread, which Qt queues onto the GUI thread. `BaseTab._run` drops replies from superseded requests and from tabs that have been destroyed.
+- **Styling** lives in `ui/theme.py`: widgets opt into variants via dynamic properties (e.g. `QPushButton[variant="accent"]`, `QLineEdit[error="true"]`) rather than per-widget colours.
 - **Reverse conversion** is client-side: always fetch the forward rate and invert it, avoiding an extra API call.
 - **Favourites** are stored as `[[base, quote], …]` in `~/.frankfurter_settings.json` and used by both `RateTable` and `WatchlistPanel` to sort starred pairs to the top.
 
